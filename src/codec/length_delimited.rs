@@ -52,7 +52,7 @@
 //! frame is represented with 2 bytes. Subsequent 14 bits represent the number value 500.
 //!
 //! Since the first 2 bits are used as flags, the 2 header bytes can only represent the byte length up to
-//! 16,384. Values greater than this would need another byte.
+//! 16,383. Values greater than this would need another byte.
 //!
 //! ## Example 3
 //!
@@ -68,7 +68,7 @@
 //! First two bits `11` indicate that there are at least 3 bytes in the frame header; subsequent bit `0`
 //! indicates that there doesn't exist a 4th byte in the header bytes. And the subsequent 21
 //! bits are used to represent the value 2,000,000. Since 3 bits are used as flags, 3 bytes will
-//! only be able to represent values up to 2,097,152 bytes (~2MB).
+//! only be able to represent values up to 2,097,151 bytes (~2MB).
 //!
 //! But what if we wanted to send a frame that was 50GB?
 //!
@@ -85,7 +85,7 @@
 //!
 //! First three bits `111` indicate that there are 4 bytes used in the frame header; in this case,
 //! we do not add another flag bit because 4 bytes (32 - 3 = 29 bits) are enough to represent values up to
-//! 536,870,912 bytes (536GB), which should be more than enough for most cases.
+//! 536,870,911 bytes (536GB), which should be more than enough for most cases.
 //!
 //! [tokio_util]: https://docs.rs/tokio-util/latest/tokio_util/index.html
 //! [length_delimited]: https://docs.rs/tokio-util/latest/tokio_util/codec/length_delimited/index.html
@@ -152,7 +152,7 @@ impl LengthDelimitedCodec {
     ///
     /// ```
     /// use tokio::io::{AsyncRead, AsyncWrite};
-    /// use tcp_sync::codec::length_delimited::LengthDelimitedCodec;
+    /// use po_ones_nerfect::codec::length_delimited::LengthDelimitedCodec;
     ///
     /// fn write_frame<T: AsyncRead + AsyncWrite>(io: T) {
     ///     let framed = LengthDelimitedCodec::new().into_framed(io);
@@ -325,6 +325,7 @@ mod tests {
         Dummy, Fake, Faker,
     };
     use serde::{Deserialize, Serialize};
+    use std::iter;
 
     #[derive(Debug, Clone, Serialize, Deserialize, Dummy, PartialEq)]
     struct ExampleStruct {
@@ -369,6 +370,52 @@ mod tests {
         let decoded = codec.decode(&mut buffer)?.unwrap();
         let deser: Vec<String> = serde_json::from_slice(&decoded).unwrap();
         assert_eq!(deser, faked4);
+
+        Ok(())
+    }
+
+    fn test_encoded_bytes(len: usize, expected_header_len: usize) -> Result<()> {
+        let mut codec = LengthDelimitedCodec::new();
+        let mut buffer = BytesMut::new();
+
+        let bytes = iter::repeat(b'c').take(len).collect::<Bytes>();
+        codec.encode(bytes, &mut buffer)?;
+
+        // check that encoded bytes' length is equal to expected header_len + len
+        assert_eq!(buffer.len(), expected_header_len + len);
+
+        // check that decoded bytes' length is equal to original bytes len
+        let decoded = codec.decode(&mut buffer)?.unwrap();
+        assert_eq!(decoded.len(), len);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_edge_cases() -> Result<()> {
+        // 0 bytes should have 1 byte header + 0 bytes payload
+        test_encoded_bytes(0, 1)?;
+
+        // 1 byte should have 1 byte header + 1 byte payload
+        test_encoded_bytes(1, 1)?;
+
+        // 127 bytes should have 1 byte header + 127 bytes payload
+        test_encoded_bytes(127, 1)?;
+
+        // 128 bytes should have 2 byte header + 128 bytes payload
+        test_encoded_bytes(128, 2)?;
+
+        // 16383 bytes should have 2 byte header + 16383 bytes payload
+        test_encoded_bytes(16383, 2)?;
+
+        // 16384 bytes should have 3 byte header + 16384 bytes payload
+        test_encoded_bytes(16384, 3)?;
+
+        // 2097151 bytes should have 3 byte header + 2097151 bytes payload
+        test_encoded_bytes(2097151, 3)?;
+
+        // 2097152 bytes should have 4 byte header + 2097152 bytes payload
+        test_encoded_bytes(2097152, 4)?;
 
         Ok(())
     }
