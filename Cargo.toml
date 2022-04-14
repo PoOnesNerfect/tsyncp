@@ -1,0 +1,46 @@
+[package]
+name = "po_ones_nerfect"
+version = "0.1.0"
+edition = "2021"
+authors = ["PoOnesNerfect <jack.y.l.dev@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/PoOnesNerfect/po_ones_nerfect"
+homepage = "https://github.com/PoOnesNerfect/po_ones_nerfect"
+description = """
+Simple channel-like APIs over TCP streams for communications between rust services.
+"""
+categories = ["network-programming", "encoding"]
+keywords = ["channel", "sync", "mpsc", "tcp"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bytes = { version = "1" }
+
+prost = { version = "0.10", default-features = false, features = ["std"], optional = true}
+
+serde = { version = "1", optional = true }
+serde_json = { version = "1", optional = true }
+
+rkyv = { version = "0.7", features = ["validation"], optional = true }
+bytecheck = { version = "0.6", optional = true }
+
+futures = { version = "0.3" }
+tokio = { version = "1", features = ["sync", "net", "macros"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+
+snafu = { version = "0.7", features = ["default", "futures"] }
+
+[features]
+default = ["json", "protobuf", "rkyv"]
+rkyv = ["dep:rkyv", "bytecheck"]
+json = ["serde", "serde_json"]
+protobuf = ["prost/std"]
+
+[dev-dependencies]
+fake = { version = "2.4", features = ["derive"] }
+rand = { version = "0.8" }
+serde = { version = "1", features = ["derive"]}
+serde_json = { version = "1" }
+tokio = { version = "1", features = ["sync", "net", "macros", "rt-multi-thread"] }
