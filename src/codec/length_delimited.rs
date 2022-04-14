@@ -1,4 +1,4 @@
-//! Frame a stream of bytes based on a length prefix
+//! Length delimited encoding/decoding scheme that uses first n bits to represent header bytes' length. (1 <= n <= 3)
 //!
 //! The implementation of the codec is similar to
 //! [tokio_util]'s implementation of [length_delimited]; however, the differentiation is that tokio_util's implementation uses a fixed type (u32, unless specified otherwise using a builder) for frame length, whereas this crate's implementation uses varying types (u8 - u32) depending on the length of the frame.
@@ -17,7 +17,7 @@
 //! # Implementation details
 //!
 //! Length byte's first n bits are reserved to indicate whether or not there exists (n + 1)th length byte
-//! (n <= 3).
+//! (1 <= n <= 3).
 //!
 //! ## Example 1
 //!
@@ -285,6 +285,7 @@ impl Encoder<Bytes> for LengthDelimitedCodec {
 }
 
 /// Codec's error type
+/// TODO: separate error types to `EncodeError` and `DecodeError`
 #[derive(Debug, Snafu)]
 pub enum Error {
     /// Invalid length in frame header was received while decoding frame.
