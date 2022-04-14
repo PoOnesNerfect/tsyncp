@@ -15,17 +15,17 @@ pub use length_delimited::LengthDelimitedCodec;
 /// Type alias for `Framed` with length delimited codec.
 pub type Framed<T, U = length_delimited::LengthDelimitedCodec> = tokio_util::codec::Framed<T, U>;
 
-pub trait FrameEncode<T> {
+pub trait FrameSerialize<T> {
     type Error: std::error::Error;
 
-    fn encode_frame(data: &T) -> Result<Bytes, Self::Error>;
+    fn serialize_frame(data: &T) -> Result<Bytes, Self::Error>;
 }
 
 /// Generic encoding/decoding scheme for turning a frame of bytes into an item.
-pub trait FrameDecode<T> {
+pub trait FrameDeserialize<T> {
     type Error: std::error::Error;
 
-    fn decode_frame(bytes: Bytes) -> Result<T, Self::Error>;
+    fn deserialize_frame(bytes: Bytes) -> Result<T, Self::Error>;
 }
 
 #[cfg(feature = "rkyv")]
@@ -45,7 +45,7 @@ mod rkyv_mod {
         AlignedVec, Fallible, Infallible,
     };
 
-    pub struct RkyvCodec;
+    pub struct RkyvFrame;
 
     impl<
             T: rkyv::Serialize<
@@ -55,7 +55,7 @@ mod rkyv_mod {
                     SharedSerializeMap,
                 >,
             >,
-        > FrameEncode<T> for RkyvCodec
+        > FrameSerialize<T> for RkyvFrame
     {
         // type Error = CompositeSerializerError<Infallible, AllocScratchError>;
         type Error = CompositeSerializerError<
@@ -64,15 +64,15 @@ mod rkyv_mod {
             SharedSerializeMapError,
         >;
 
-        fn encode_frame(data: &T) -> Result<Bytes, Self::Error> {
+        fn serialize_frame(data: &T) -> Result<Bytes, Self::Error> {
             rkyv::to_bytes::<_, 256>(data).map(|bytes| Bytes::from(bytes.to_vec()))
         }
     }
 
-    impl<T: prost::Message + Default> FrameDecode<T> for RkyvCodec {
+    impl<T: prost::Message + Default> FrameDeserialize<T> for RkyvFrame {
         type Error = prost::DecodeError;
 
-        fn decode_frame(mut bytes: Bytes) -> Result<T, Self::Error> {
+        fn deserialize_frame(mut bytes: Bytes) -> Result<T, Self::Error> {
             T::decode(&mut bytes)
         }
     }
@@ -84,12 +84,12 @@ pub use protobuf::*;
 mod protobuf {
     use super::*;
 
-    pub struct ProtobufCodec;
+    pub struct ProtobufFrame;
 
-    impl<T: prost::Message> FrameEncode<T> for ProtobufCodec {
+    impl<T: prost::Message> FrameSerialize<T> for ProtobufFrame {
         type Error = prost::EncodeError;
 
-        fn encode_frame(data: &T) -> Result<Bytes, Self::Error> {
+        fn serialize_frame(data: &T) -> Result<Bytes, Self::Error> {
             let mut bytes = bytes::BytesMut::new();
 
             data.encode(&mut bytes)?;
@@ -98,10 +98,10 @@ mod protobuf {
         }
     }
 
-    impl<T: prost::Message + Default> FrameDecode<T> for ProtobufCodec {
+    impl<T: prost::Message + Default> FrameDeserialize<T> for ProtobufFrame {
         type Error = prost::DecodeError;
 
-        fn decode_frame(mut bytes: Bytes) -> Result<T, Self::Error> {
+        fn deserialize_frame(mut bytes: Bytes) -> Result<T, Self::Error> {
             T::decode(&mut bytes)
         }
     }
@@ -113,20 +113,20 @@ pub use json::*;
 mod json {
     use super::*;
 
-    pub struct JsonCodec;
+    pub struct JsonFrame;
 
-    impl<T: Serialize> FrameEncode<T> for JsonCodec {
+    impl<T: Serialize> FrameSerialize<T> for JsonFrame {
         type Error = serde_json::Error;
 
-        fn encode_frame(data: &T) -> Result<Bytes, Self::Error> {
+        fn serialize_frame(data: &T) -> Result<Bytes, Self::Error> {
             serde_json::to_vec(data).map(Into::into)
         }
     }
 
-    impl<T: DeserializeOwned> FrameDecode<T> for JsonCodec {
+    impl<T: DeserializeOwned> FrameDeserialize<T> for JsonFrame {
         type Error = serde_json::Error;
 
-        fn decode_frame(bytes: Bytes) -> Result<T, Self::Error> {
+        fn deserialize_frame(bytes: Bytes) -> Result<T, Self::Error> {
             serde_json::from_slice(bytes.as_ref())
         }
     }

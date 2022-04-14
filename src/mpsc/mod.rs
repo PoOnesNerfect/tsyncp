@@ -1,4 +1,4 @@
-use crate::codec::{FrameDecode, FrameEncode, Framed, LengthDelimitedCodec};
+use crate::codec::{FrameDeserialize, FrameSerialize, Framed, LengthDelimitedCodec};
 use bytes::Bytes;
 use futures::Sink;
 use snafu::Snafu;
@@ -8,23 +8,23 @@ use std::task::Poll;
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 #[cfg(feature = "json")]
-pub type JsonSender<T> = Sender<T, crate::codec::JsonCodec>;
+pub type JsonSender<T> = Sender<T, crate::codec::JsonFrame>;
 
 #[cfg(feature = "protobuf")]
-pub type ProtobufSender<T> = Sender<T, crate::codec::ProtobufCodec>;
+pub type ProtobufSender<T> = Sender<T, crate::codec::ProtobufFrame>;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-pub async fn sender<T, F: FrameEncode<T>>(dest: impl ToSocketAddrs) -> Result<Sender<T, F>> {
+pub async fn sender<T, F: FrameSerialize<T>>(dest: impl ToSocketAddrs) -> Result<Sender<T, F>> {
     todo!()
 }
 
-pub struct Sender<T, F: FrameEncode<T>, C = LengthDelimitedCodec> {
+pub struct Sender<T, F: FrameSerialize<T>, C = LengthDelimitedCodec> {
     framed: Framed<TcpStream, C>,
     _phantom: PhantomData<(T, F)>,
 }
 
-impl<T, F: FrameEncode<T>> Sender<T, F> {
+impl<T, F: FrameSerialize<T>> Sender<T, F> {
     pub fn with_tcp_stream(tcp_stream: TcpStream) -> Self {
         Self {
             framed: Framed::new(tcp_stream, LengthDelimitedCodec::new()),
@@ -41,7 +41,7 @@ impl<T, F: FrameEncode<T>> Sender<T, F> {
     }
 }
 
-impl<T, F: FrameEncode<T>> Sink<T> for Sender<T, F> {
+impl<T, F: FrameSerialize<T>> Sink<T> for Sender<T, F> {
     type Error = Error;
 
     fn start_send(self: std::pin::Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
