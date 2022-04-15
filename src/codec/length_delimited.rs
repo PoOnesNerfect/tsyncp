@@ -1,4 +1,4 @@
-//! Length delimited encoding/decoding scheme that uses first n bits to represent header bytes' length. (1 <= n <= 3)
+//! Length delimited bytes-to-frame encoding/decoding scheme that uses first n bits to represent header bytes' length. (1 <= n <= 3)
 //!
 //! The implementation of the codec is similar to
 //! [tokio_util]'s implementation of [length_delimited]; however, the differentiation is that tokio_util's implementation uses a fixed type (u32, unless specified otherwise using a builder) for frame length, whereas this crate's implementation uses varying types (u8 - u32) depending on the length of the frame.
@@ -152,7 +152,7 @@ impl LengthDelimitedCodec {
     ///
     /// ```
     /// use tokio::io::{AsyncRead, AsyncWrite};
-    /// use po_ones_nerfect::codec::length_delimited::LengthDelimitedCodec;
+    /// use tsyncp::codec::length_delimited::LengthDelimitedCodec;
     ///
     /// fn write_frame<T: AsyncRead + AsyncWrite>(io: T) {
     ///     let framed = LengthDelimitedCodec::new().into_framed(io);
@@ -249,10 +249,10 @@ impl Decoder for LengthDelimitedCodec {
     }
 }
 
-impl Encoder<Bytes> for LengthDelimitedCodec {
+impl Encoder<&[u8]> for LengthDelimitedCodec {
     type Error = Error;
 
-    fn encode(&mut self, data: Bytes, dst: &mut BytesMut) -> Result<()> {
+    fn encode(&mut self, data: &[u8], dst: &mut BytesMut) -> Result<()> {
         let payload_len = data.len();
 
         if payload_len > self.max_frame_length {
@@ -278,7 +278,7 @@ impl Encoder<Bytes> for LengthDelimitedCodec {
         dst.reserve(payload_len + header_len);
 
         dst.put_uint(header_frame as u64, header_len);
-        dst.extend_from_slice(data.as_ref());
+        dst.extend_from_slice(data);
 
         Ok(())
     }
@@ -345,17 +345,17 @@ mod tests {
         let faked1: ExampleStruct = Faker.fake();
 
         let ser1: Bytes = serde_json::to_vec(&faked1).unwrap().into();
-        codec.encode(ser1, &mut buffer)?;
+        codec.encode(&ser1, &mut buffer)?;
 
         let faked2: ExampleStruct = Faker.fake();
         let ser2: Bytes = serde_json::to_vec(&faked2).unwrap().into();
-        codec.encode(ser2, &mut buffer)?;
+        codec.encode(&ser2, &mut buffer)?;
 
         let faked3: String = Sentence(100000..105000).fake();
-        codec.encode(faked3.clone().into_bytes().into(), &mut buffer)?;
+        codec.encode(&faked3.clone().into_bytes(), &mut buffer)?;
 
         let faked4: Vec<String> = Sentences(10000..10500).fake();
-        codec.encode(serde_json::to_vec(&faked4).unwrap().into(), &mut buffer)?;
+        codec.encode(&serde_json::to_vec(&faked4).unwrap(), &mut buffer)?;
 
         let decoded = codec.decode(&mut buffer)?.unwrap();
         let deser: ExampleStruct = serde_json::from_slice(&decoded).unwrap();
@@ -380,7 +380,7 @@ mod tests {
         let mut buffer = BytesMut::new();
 
         let bytes = iter::repeat(b'c').take(len).collect::<Bytes>();
-        codec.encode(bytes, &mut buffer)?;
+        codec.encode(&bytes, &mut buffer)?;
 
         // check that encoded bytes' length is equal to expected header_len + len
         assert_eq!(buffer.len(), expected_header_len + len);

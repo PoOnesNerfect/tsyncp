@@ -1,5 +1,6 @@
-use crate::codec::{FrameDeserialize, FrameSerialize, Framed, LengthDelimitedCodec};
+use crate::codec::{length_delimited::LengthDelimitedCodec, DecodeMethod, EncodeMethod, Framed};
 use bytes::Bytes;
+use futures::Future;
 use futures::Sink;
 use snafu::Snafu;
 use std::io;
@@ -8,23 +9,45 @@ use std::task::Poll;
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 #[cfg(feature = "json")]
-pub type JsonSender<T> = Sender<T, crate::codec::JsonFrame>;
+pub type JsonSender<T> = Sender<T, crate::codec::JsonCodec>;
 
 #[cfg(feature = "protobuf")]
-pub type ProtobufSender<T> = Sender<T, crate::codec::ProtobufFrame>;
+pub type ProtobufSender<T> = Sender<T, crate::codec::ProtobufCodec>;
 
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-pub async fn sender<T, F: FrameSerialize<T>>(dest: impl ToSocketAddrs) -> Result<Sender<T, F>> {
-    todo!()
+pub fn sender<A: ToSocketAddrs, T, F: EncodeMethod<T>>(
+    dest: A,
+) -> impl Future<Output = Result<Sender<T, F>>> {
+    SenderBuilderFuture {
+        dest,
+        _phantom: PhantomData,
+    }
 }
 
-pub struct Sender<T, F: FrameSerialize<T>, C = LengthDelimitedCodec> {
+/// Future returned by [sender] method in which awaiting it builds the [Sender].
+///
+/// This future can be optionally set custom configurations by calling methods on it such as [with_tls],
+/// [with_codec], [with_frame_codec] before awaiting it.
+pub struct SenderBuilderFuture<A: ToSocketAddrs, T, F: EncodeMethod<T>> {
+    dest: A,
+    _phantom: PhantomData<(T, F)>,
+}
+
+impl<A: ToSocketAddrs, T, F: EncodeMethod<T>> Future for SenderBuilderFuture<A, T, F> {
+    type Output = Result<Sender<T, F>>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        todo!()
+    }
+}
+
+pub struct Sender<T, F: EncodeMethod<T>, C = LengthDelimitedCodec> {
     framed: Framed<TcpStream, C>,
     _phantom: PhantomData<(T, F)>,
 }
 
-impl<T, F: FrameSerialize<T>> Sender<T, F> {
+impl<T, F: EncodeMethod<T>> Sender<T, F> {
     pub fn with_tcp_stream(tcp_stream: TcpStream) -> Self {
         Self {
             framed: Framed::new(tcp_stream, LengthDelimitedCodec::new()),
@@ -41,7 +64,7 @@ impl<T, F: FrameSerialize<T>> Sender<T, F> {
     }
 }
 
-impl<T, F: FrameSerialize<T>> Sink<T> for Sender<T, F> {
+impl<T, F: EncodeMethod<T>> Sink<T> for Sender<T, F> {
     type Error = Error;
 
     fn start_send(self: std::pin::Pin<&mut Self>, item: T) -> Result<(), Self::Error> {

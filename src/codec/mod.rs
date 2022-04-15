@@ -4,28 +4,30 @@
 //!
 //! [tokio_util::codec]: https://docs.rs/tokio-util/latest/tokio_util/codec/index.html
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 
 #[cfg(feature = "serde")]
 use serde::{de::DeserializeOwned, Serialize};
 
 pub mod length_delimited;
-pub use length_delimited::LengthDelimitedCodec;
 
-/// Type alias for `Framed` with length delimited codec.
+/// Type alias for [Framed] with our custom length delimited codec.
+///
+/// [Framed]: https://docs.rs/tokio-util/latest/tokio_util/codec/struct.Framed.html
 pub type Framed<T, U = length_delimited::LengthDelimitedCodec> = tokio_util::codec::Framed<T, U>;
 
-pub trait FrameSerialize<T> {
+/// Trait for encoding methods which converts a given item into bytes.
+pub trait EncodeMethod<T> {
     type Error: std::error::Error;
 
-    fn serialize_frame(data: &T) -> Result<Bytes, Self::Error>;
+    fn encode(data: &T) -> Result<Bytes, Self::Error>;
 }
 
-/// Generic encoding/decoding scheme for turning a frame of bytes into an item.
-pub trait FrameDeserialize<T> {
+/// Trait for decoding methods which converts given bytes into an item.
+pub trait DecodeMethod<T> {
     type Error: std::error::Error;
 
-    fn deserialize_frame(bytes: Bytes) -> Result<T, Self::Error>;
+    fn decode(bytes: BytesMut) -> Result<T, Self::Error>;
 }
 
 #[cfg(feature = "rkyv")]
@@ -45,7 +47,7 @@ mod rkyv_mod {
         AlignedVec, Fallible, Infallible,
     };
 
-    pub struct RkyvFrame;
+    pub struct RkyvCodec;
 
     impl<
             T: rkyv::Serialize<
@@ -55,7 +57,7 @@ mod rkyv_mod {
                     SharedSerializeMap,
                 >,
             >,
-        > FrameSerialize<T> for RkyvFrame
+        > EncodeMethod<T> for RkyvCodec
     {
         // type Error = CompositeSerializerError<Infallible, AllocScratchError>;
         type Error = CompositeSerializerError<
@@ -64,15 +66,15 @@ mod rkyv_mod {
             SharedSerializeMapError,
         >;
 
-        fn serialize_frame(data: &T) -> Result<Bytes, Self::Error> {
+        fn encode(data: &T) -> Result<Bytes, Self::Error> {
             rkyv::to_bytes::<_, 256>(data).map(|bytes| Bytes::from(bytes.to_vec()))
         }
     }
 
-    impl<T: prost::Message + Default> FrameDeserialize<T> for RkyvFrame {
+    impl<T: prost::Message + Default> DecodeMethod<T> for RkyvCodec {
         type Error = prost::DecodeError;
 
-        fn deserialize_frame(mut bytes: Bytes) -> Result<T, Self::Error> {
+        fn decode(mut bytes: BytesMut) -> Result<T, Self::Error> {
             T::decode(&mut bytes)
         }
     }
@@ -84,24 +86,20 @@ pub use protobuf::*;
 mod protobuf {
     use super::*;
 
-    pub struct ProtobufFrame;
+    pub struct ProtobufCodec;
 
-    impl<T: prost::Message> FrameSerialize<T> for ProtobufFrame {
+    impl<T: prost::Message> EncodeMethod<T> for ProtobufCodec {
         type Error = prost::EncodeError;
 
-        fn serialize_frame(data: &T) -> Result<Bytes, Self::Error> {
-            let mut bytes = bytes::BytesMut::new();
-
-            data.encode(&mut bytes)?;
-
-            Ok(bytes.into())
+        fn encode(data: &T) -> Result<Bytes, Self::Error> {
+            Ok(data.encode_to_vec().into())
         }
     }
 
-    impl<T: prost::Message + Default> FrameDeserialize<T> for ProtobufFrame {
+    impl<T: prost::Message + Default> DecodeMethod<T> for ProtobufCodec {
         type Error = prost::DecodeError;
 
-        fn deserialize_frame(mut bytes: Bytes) -> Result<T, Self::Error> {
+        fn decode(mut bytes: BytesMut) -> Result<T, Self::Error> {
             T::decode(&mut bytes)
         }
     }
@@ -113,20 +111,20 @@ pub use json::*;
 mod json {
     use super::*;
 
-    pub struct JsonFrame;
+    pub struct JsonCodec;
 
-    impl<T: Serialize> FrameSerialize<T> for JsonFrame {
+    impl<T: Serialize> EncodeMethod<T> for JsonCodec {
         type Error = serde_json::Error;
 
-        fn serialize_frame(data: &T) -> Result<Bytes, Self::Error> {
+        fn encode(data: &T) -> Result<Bytes, Self::Error> {
             serde_json::to_vec(data).map(Into::into)
         }
     }
 
-    impl<T: DeserializeOwned> FrameDeserialize<T> for JsonFrame {
+    impl<T: DeserializeOwned> DecodeMethod<T> for JsonCodec {
         type Error = serde_json::Error;
 
-        fn deserialize_frame(bytes: Bytes) -> Result<T, Self::Error> {
+        fn decode(bytes: BytesMut) -> Result<T, Self::Error> {
             serde_json::from_slice(bytes.as_ref())
         }
     }
