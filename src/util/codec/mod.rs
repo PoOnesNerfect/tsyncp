@@ -5,29 +5,42 @@
 //! [tokio_util::codec]: https://docs.rs/tokio-util/latest/tokio_util/codec/index.html
 
 use bytes::{Bytes, BytesMut};
+use std::fmt;
 
 #[cfg(feature = "serde")]
 use serde::{de::DeserializeOwned, Serialize};
 
-pub mod length_delimited;
-
-/// Type alias for [Framed] with our custom length delimited codec.
-///
-/// [Framed]: https://docs.rs/tokio-util/latest/tokio_util/codec/struct.Framed.html
-pub type Framed<T, U = length_delimited::LengthDelimitedCodec> = tokio_util::codec::Framed<T, U>;
-
 /// Trait for encoding methods which converts a given item into bytes.
-pub trait EncodeMethod<T> {
-    type Error: std::error::Error;
+pub trait EncodeMethod<T>: std::fmt::Debug {
+    type Error: 'static + fmt::Debug + std::error::Error;
 
     fn encode(data: &T) -> Result<Bytes, Self::Error>;
 }
 
 /// Trait for decoding methods which converts given bytes into an item.
-pub trait DecodeMethod<T> {
-    type Error: std::error::Error;
+pub trait DecodeMethod<T>: std::fmt::Debug {
+    type Error: 'static + fmt::Debug + std::error::Error;
 
     fn decode(bytes: BytesMut) -> Result<T, Self::Error>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EmptyCodec;
+
+impl EncodeMethod<()> for EmptyCodec {
+    type Error = serde_json::Error;
+
+    fn encode(data: &()) -> Result<Bytes, Self::Error> {
+        Ok(Bytes::new())
+    }
+}
+
+impl DecodeMethod<()> for EmptyCodec {
+    type Error = serde_json::Error;
+
+    fn decode(bytes: BytesMut) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 
 #[cfg(feature = "rkyv")]
@@ -36,17 +49,15 @@ pub use rkyv_mod::*;
 mod rkyv_mod {
     use super::*;
     use rkyv::{
-        ser::{
-            serializers::{
-                AlignedSerializer, AllocScratch, AllocScratchError, CompositeSerializer,
-                CompositeSerializerError, FallbackScratch, HeapScratch, SharedSerializeMap,
-                SharedSerializeMapError,
-            },
-            Serializer,
+        ser::serializers::{
+            AlignedSerializer, AllocScratch, AllocScratchError, CompositeSerializer,
+            CompositeSerializerError, FallbackScratch, HeapScratch, SharedSerializeMap,
+            SharedSerializeMapError,
         },
-        AlignedVec, Fallible, Infallible,
+        AlignedVec, Deserialize, Fallible, Infallible,
     };
 
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
     pub struct RkyvCodec;
 
     impl<
@@ -71,11 +82,15 @@ mod rkyv_mod {
         }
     }
 
-    impl<T: prost::Message + Default> DecodeMethod<T> for RkyvCodec {
-        type Error = prost::DecodeError;
+    impl<T: rkyv::Archive> DecodeMethod<T> for RkyvCodec {
+        type Error = std::convert::Infallible;
 
         fn decode(mut bytes: BytesMut) -> Result<T, Self::Error> {
-            T::decode(&mut bytes)
+            // let archived = unsafe { rkyv::archived_root::<T>(&bytes[..]) };
+            // let t: T = archived.deserialize(&mut rkyv::Infallible).unwrap();
+
+            // Ok(t)
+            todo!();
         }
     }
 }
@@ -86,6 +101,7 @@ pub use protobuf::*;
 mod protobuf {
     use super::*;
 
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
     pub struct ProtobufCodec;
 
     impl<T: prost::Message> EncodeMethod<T> for ProtobufCodec {
@@ -111,6 +127,7 @@ pub use json::*;
 mod json {
     use super::*;
 
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
     pub struct JsonCodec;
 
     impl<T: Serialize> EncodeMethod<T> for JsonCodec {

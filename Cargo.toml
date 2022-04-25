@@ -9,10 +9,10 @@ repository = "https://github.com/PoOnesNerfect/tsyncp"
 homepage = "https://github.com/PoOnesNerfect/tsyncp"
 documentation = "https://docs.rs/tsyncp/"
 description = """
-WIP. NOT FEATURE COMPLETE. Simple channel-like APIs over TCP streams for communications between rust services.
+Simple channel-like APIs (mpsc, broadcast, barrier, etc) over TCP for message-passing between rust services.
 """
-categories = ["network-programming", "encoding"]
-keywords = ["channel", "sync", "mpsc", "tcp"]
+categories = ["network-programming"]
+keywords = ["channel", "sync", "mpsc", "tcp", "message-passing"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -23,6 +23,7 @@ json = ["serde", "serde_json"]
 protobuf = ["prost/std"]
 
 [dependencies]
+pin-project = { version = "1" }
 bytes = { version = "1" }
 
 prost = { version = "0.10", default-features = false, features = ["std"], optional = true}
@@ -34,14 +35,18 @@ rkyv = { version = "0.7", features = ["validation"], optional = true }
 bytecheck = { version = "0.6", optional = true }
 
 futures = { version = "0.3" }
-tokio = { version = "1", features = ["sync", "net", "macros"] }
+tokio = { version = "1", features = ["sync", "time", "net", "macros", "io-util", "rt"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 
-snafu = { version = "0.7", features = ["default", "futures"] }
+snafu = { version = "0.7", features = ["default", "futures", "backtraces-impl-backtrace-crate"] }
 
 [dev-dependencies]
+env_logger = { version = "0.9" }
+log = { version = "0.4" }
+color-eyre = { version = "0.6" }
 fake = { version = "2.4", features = ["derive"] }
 rand = { version = "0.8" }
 serde = { version = "1", features = ["derive"]}
 serde_json = { version = "1" }
-tokio = { version = "1", features = ["sync", "net", "macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["sync", "net", "macros", "rt-multi-thread", "time"] }
+prost = { version = "0.10", default-features = false, features = ["std", "prost-derive"] }
