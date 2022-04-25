@@ -15,25 +15,25 @@ use tokio::io::{AsyncRead, AsyncWrite};
 pub mod builder;
 
 pub fn block_on<A: 'static + Clone + Send + ToSocketAddrs>(
-    dest: A,
+    local_addr: A,
 ) -> builder::BarrierBuilderFuture<
     A,
     TcpSplit,
     impl Future<Output = multi_channel::builder::AcceptResult>,
     impl Clone + Fn(SocketAddr) -> bool,
 > {
-    builder::new_barrier(dest)
+    builder::new_barrier(local_addr)
 }
 
-pub fn wait_for<A: 'static + Clone + Send + ToSocketAddrs>(
-    local_addr: A,
+pub fn wait_to<A: 'static + Clone + Send + ToSocketAddrs>(
+    dest: A,
 ) -> builder::WaiterBuilderFuture<
     A,
     TcpSplit,
     impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
 > {
-    builder::new_waiter(local_addr)
+    builder::new_waiter(dest)
 }
 
 #[pin_project::pin_project]

@@ -18,7 +18,7 @@ pub type Result<T, E = ChannelBuilderError> = std::result::Result<T, E>;
 pub type BuildResult<RW> = Result<(RW, SocketAddr, SocketAddr)>;
 
 pub(crate) fn new<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
-    dest: A,
+    addr: A,
     listening: bool,
 ) -> ChannelBuilderFuture<
     A,
@@ -34,13 +34,13 @@ pub(crate) fn new<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     let tcp_settings = TcpSettings::default();
 
     ChannelBuilderFuture {
-        dest: dest.clone(),
+        addr: addr.clone(),
         listening,
         max_retries,
         retry_sleep_duration,
         tcp_settings,
         state: ChannelBuilderFutureState::Connecting(build_stream::<A, _>(
-            dest,
+            addr,
             listening,
             max_retries,
             retry_sleep_duration,
@@ -52,13 +52,9 @@ pub(crate) fn new<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     }
 }
 
-/// Future returned by [sender] method in which awaiting it builds the [Channel].
-///
-/// This future can be optionally set custom configurations by calling methods on it such as [with_tls],
-/// [with_codec], [with_frame_codec] before awaiting it.
 #[pin_project]
 pub struct ChannelBuilderFuture<A, T, E, RW, Fut, Filter> {
-    dest: A,
+    addr: A,
     listening: bool,
     max_retries: Option<usize>,
     retry_sleep_duration: Duration,
@@ -109,7 +105,7 @@ where
     ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = BuildResult<TcpSplit>>, Filter2>
     {
         let ChannelBuilderFuture {
-            dest,
+            addr,
             listening,
             max_retries,
             retry_sleep_duration,
@@ -118,12 +114,12 @@ where
         } = self;
 
         ChannelBuilderFuture {
-            dest: dest.clone(),
+            addr: addr.clone(),
             listening,
             max_retries,
             retry_sleep_duration,
             state: ChannelBuilderFutureState::Connecting(build_stream::<A, Filter2>(
-                dest,
+                addr,
                 listening,
                 max_retries,
                 retry_sleep_duration,
@@ -216,7 +212,7 @@ where
     ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = BuildResult<TcpSplit>>, Filter>
     {
         let ChannelBuilderFuture {
-            dest,
+            addr,
             listening,
             max_retries,
             retry_sleep_duration,
@@ -226,12 +222,12 @@ where
         } = self;
 
         ChannelBuilderFuture {
-            dest: dest.clone(),
+            addr: addr.clone(),
             listening,
             max_retries,
             retry_sleep_duration,
             state: ChannelBuilderFutureState::Connecting(build_stream::<A, _>(
-                dest,
+                addr,
                 listening,
                 max_retries,
                 retry_sleep_duration,
@@ -246,9 +242,9 @@ where
 }
 
 impl<A, T, E, RW, Fut, Filter> ChannelBuilderFuture<A, T, E, RW, Fut, Filter> {
-    pub fn with_codec<C>(mut self) -> ChannelBuilderFuture<A, T, C, RW, Fut, Filter> {
+    pub fn with_codec<C>(self) -> ChannelBuilderFuture<A, T, C, RW, Fut, Filter> {
         ChannelBuilderFuture {
-            dest: self.dest,
+            addr: self.addr,
             listening: self.listening,
             max_retries: self.max_retries,
             retry_sleep_duration: self.retry_sleep_duration,
@@ -260,13 +256,13 @@ impl<A, T, E, RW, Fut, Filter> ChannelBuilderFuture<A, T, E, RW, Fut, Filter> {
     }
 
     pub fn with_stream<S>(
-        mut self,
+        self,
         custom_stream: S,
         local_addr: SocketAddr,
         peer_addr: SocketAddr,
     ) -> ChannelBuilderFuture<A, T, E, S, Ready<Result<S>>, Filter> {
         ChannelBuilderFuture {
-            dest: self.dest,
+            addr: self.addr,
             listening: self.listening,
             max_retries: self.max_retries,
             retry_sleep_duration: self.retry_sleep_duration,
@@ -449,7 +445,6 @@ pub mod errors {
     use super::*;
     use snafu::Snafu;
 
-    /// Codec's error type
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
     pub enum ChannelBuilderError {

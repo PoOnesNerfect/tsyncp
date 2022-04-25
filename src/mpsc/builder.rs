@@ -45,10 +45,6 @@ pub(crate) fn new_receiver<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
     }
 }
 
-/// Future returned by [sender] method in which awaiting it builds the [Channel].
-///
-/// This future can be optionally set custom configurations by calling methods on it such as [with_tls],
-/// [with_codec], [with_frame_codec] before awaiting it.
 #[pin_project]
 pub struct SenderBuilderFuture<A, T, E, RW, Fut, Filter> {
     #[pin]
@@ -531,7 +527,6 @@ pub mod errors {
     use super::*;
     use snafu::Snafu;
 
-    /// Codec's error type
     #[derive(Debug, Snafu)]
     #[snafu(display("[SenderBuilderError] Failed building sender"))]
     #[snafu(visibility(pub(super)))]
@@ -541,7 +536,6 @@ pub mod errors {
         backtrace: Backtrace,
     }
 
-    /// Codec's error type
     #[derive(Debug, Snafu)]
     #[snafu(display("[ReceiverBuilderError] Failed building sender"))]
     #[snafu(visibility(pub(super)))]

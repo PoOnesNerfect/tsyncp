@@ -35,7 +35,7 @@ async fn try_main() -> Result<()> {
     let sender_handles = (0..LEN)
         .map(|_| {
             tokio::spawn(async move {
-                let mut waiter: barrier::Waiter = barrier::wait_for(ADDR)
+                let mut waiter: barrier::Waiter = barrier::wait_to(ADDR)
                     .retry(Duration::from_millis(500), 100)
                     .await?;
 

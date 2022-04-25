@@ -47,7 +47,7 @@ pub fn send_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
 }
 
 pub fn send_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
-    dest: A,
+    local_addr: A,
 ) -> builder::SenderOnBuilderFuture<
     A,
     T,
@@ -56,11 +56,11 @@ pub fn send_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
 > {
-    builder::sender_on(dest)
+    builder::sender_on(local_addr)
 }
 
 pub fn recv_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
-    local_addr: A,
+    dest: A,
 ) -> builder::ReceiverToBuilderFuture<
     A,
     T,
@@ -69,7 +69,7 @@ pub fn recv_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
 > {
-    builder::receiver_to(local_addr)
+    builder::receiver_to(dest)
 }
 
 pub fn recv_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(

@@ -31,7 +31,7 @@ pub(crate) fn sender_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
 }
 
 pub(crate) fn sender_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
-    dest: A,
+    local_addr: A,
 ) -> SenderOnBuilderFuture<
     A,
     T,
@@ -41,7 +41,7 @@ pub(crate) fn sender_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     impl Clone + Fn(SocketAddr) -> bool,
 > {
     SenderOnBuilderFuture {
-        fut: channel::builder::new(dest, true),
+        fut: channel::builder::new(local_addr, true),
     }
 }
 
@@ -61,7 +61,7 @@ pub(crate) fn receiver_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
 }
 
 pub(crate) fn receiver_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
-    dest: A,
+    local_addr: A,
 ) -> ReceiverOnBuilderFuture<
     A,
     T,
@@ -71,14 +71,10 @@ pub(crate) fn receiver_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     impl Clone + Fn(SocketAddr) -> bool,
 > {
     ReceiverOnBuilderFuture {
-        fut: channel::builder::new(dest, true),
+        fut: channel::builder::new(local_addr, true),
     }
 }
 
-/// Future returned by [sender] method in which awaiting it builds the [Channel].
-///
-/// This future can be optionally set custom configurations by calling methods on it such as [with_tls],
-/// [with_codec], [with_frame_codec] before awaiting it.
 #[pin_project]
 pub struct SenderToBuilderFuture<A, T, E, RW, Fut, Filter> {
     #[pin]
@@ -276,10 +272,6 @@ where
     }
 }
 
-/// Future returned by [sender] method in which awaiting it builds the [Channel].
-///
-/// This future can be optionally set custom configurations by calling methods on it such as [with_tls],
-/// [with_codec], [with_frame_codec] before awaiting it.
 #[pin_project]
 pub struct SenderOnBuilderFuture<A, T, E, RW, Fut, Filter> {
     #[pin]
@@ -476,10 +468,6 @@ where
     }
 }
 
-/// Future returned by [sender] method in which awaiting it builds the [Channel].
-///
-/// This future can be optionally set custom configurations by calling methods on it such as [with_tls],
-/// [with_codec], [with_frame_codec] before awaiting it.
 #[pin_project]
 pub struct ReceiverToBuilderFuture<A, T, E, RW, Fut, Filter> {
     #[pin]
@@ -677,10 +665,6 @@ where
     }
 }
 
-/// Future returned by [sender] method in which awaiting it builds the [Channel].
-///
-/// This future can be optionally set custom configurations by calling methods on it such as [with_tls],
-/// [with_codec], [with_frame_codec] before awaiting it.
 #[pin_project]
 pub struct ReceiverOnBuilderFuture<A, T, E, RW, Fut, Filter> {
     #[pin]
@@ -881,7 +865,6 @@ pub mod errors {
     use super::*;
     use snafu::Snafu;
 
-    /// Codec's error type
     #[derive(Debug, Snafu)]
     #[snafu(display("[SenderBuilderError] Failed building sender"))]
     #[snafu(visibility(pub(super)))]
@@ -891,7 +874,6 @@ pub mod errors {
         backtrace: Backtrace,
     }
 
-    /// Codec's error type
     #[derive(Debug, Snafu)]
     #[snafu(display("[ReceiverBuilderError] Failed building sender"))]
     #[snafu(visibility(pub(super)))]

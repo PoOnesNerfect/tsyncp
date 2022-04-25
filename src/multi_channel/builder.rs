@@ -41,10 +41,6 @@ pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
     }
 }
 
-/// Future returned by [sender] method in which awaiting it builds the [MultiChannel].
-///
-/// This future can be optionally set custom configurations by calling methods on it such as [with_tls],
-/// [with_codec], [with_frame_codec] before awaiting it.
 #[pin_project]
 pub struct ChannelBuilderFuture<
     A,
@@ -433,7 +429,6 @@ pub mod errors {
     use super::*;
     use snafu::Snafu;
 
-    /// Codec's error type
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
     pub enum ChannelBuilderError {

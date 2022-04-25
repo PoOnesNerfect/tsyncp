@@ -35,8 +35,8 @@ pub type RkyvReceiver<T, const N: usize = 0> = Receiver<T, crate::util::codec::R
 #[cfg(feature = "rkyv")]
 pub type RkyvSender<T, const N: usize = 0> = Sender<T, crate::util::codec::RkyvCodec, N>;
 
-pub fn broadcast_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
-    dest: A,
+pub fn send_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
+    local_addr: A,
 ) -> builder::SenderBuilderFuture<
     A,
     T,
@@ -45,11 +45,11 @@ pub fn broadcast_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     impl Future<Output = multi_channel::builder::AcceptResult>,
     impl Clone + Fn(SocketAddr) -> bool,
 > {
-    builder::new_sender(dest)
+    builder::new_sender(local_addr)
 }
 
-pub fn listen_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
-    local_addr: A,
+pub fn recv_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
+    dest: A,
 ) -> builder::ReceiverBuilderFuture<
     A,
     T,
@@ -58,7 +58,7 @@ pub fn listen_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
 > {
-    builder::new_receiver(local_addr)
+    builder::new_receiver(dest)
 }
 
 #[pin_project::pin_project]
