@@ -356,6 +356,10 @@ impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
     ) -> std::task::Poll<Option<Self::Item>> {
         let len = self.len();
 
+        if len == 0 {
+            return Poll::Ready(None);
+        }
+
         let mut i = 0;
         while i < len {
             let index = (i + self.stream_index) % len;

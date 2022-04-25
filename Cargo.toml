@@ -17,7 +17,8 @@ keywords = ["channel", "sync", "mpsc", "tcp", "message-passing"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["json", "protobuf", "rkyv"]
+default = ["full"]
+full = ["json", "protobuf", "rkyv"]
 rkyv = ["dep:rkyv", "bytecheck"]
 json = ["serde", "serde_json"]
 protobuf = ["prost/std"]

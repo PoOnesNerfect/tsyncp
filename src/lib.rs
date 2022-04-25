@@ -8,22 +8,20 @@
 
 //! Synchronization primitives over TCP for message passing between services.
 //!
-//! Major rust libraries such as [std] and [tokio] provide great synchronization primitives to be
-//! used for message-passing between threads and tasks. However, there are not many libraries
-//! that provide similar APIs that can be used over the network.
-//!
-//! Tsyncp tries to fill the gap by providing the similar APIs to be used over TCP. If you
-//! have a project where it only has a few services running that need to pass data to each other
-//! and not worry about setting up a whole message-broker, tsyncp may be a great choice for you!
+//! Tsyncp allows customizing different Serialization/Deserialization methods to encode/decode
+//! data; currently, supported schemes straight from the library are *Json*, *Protobuf*, *Bincode*, *Speedy*, and *Rkyv*; however,
+//! users can very easily implement their own [EncodeMethod] and [DecodeMethod].
 //!
 //! *Warning: Tsyncp is not a message-broker nor it tries to be;
 //! it's just a simple message-passer for simple and convenient use cases.*
 //!
 //! [std]: https://doc.rust-lang.org/stable/std/
 //! [tokio]: https://docs.rs/tokio/latest/tokio/index.html
+//! [EncodeMethod]: crate::util::codec::EncodeMethod
+//! [DecodeMethod]: crate::util::codec::DecodeMethod
 //!
 //! ## Provided APIs
-//! Currently, tsyncp provides 4 types of channels:
+//! Currently, **tsyncp** provides 4 types of channels:
 //! * [mpsc]: Multi-producer/single-consumer channel. A consumer listens to incoming connections and receives items from
 //! connected TCP streams. Any/configured number of producers can connect to the listener's socket address
 //! and send items.
@@ -40,162 +38,210 @@
 //!
 //! [Waiters]: crate::barrier::Waiter
 //! [Barrier]: crate::barrier::Barrier
+//! [examples]: https://github.com/PoOnesNerfect/tsyncp/tree/main/examples
 //!
 //!
 //! # Getting Started
 //!
-//! Tokio consists of a number of modules that provide a range of functionality
-//! essential for implementing asynchronous applications in Rust. In this
-//! section, we will take a brief tour of Tokio, summarizing the major APIs and
-//! their uses.
+//! ## Dependency and Features
 //!
-//! The easiest way to get started is to enable all features. Do this by
-//! enabling the `full` feature flag:
+//! Easiest way to use **tsyncp** is to just including it in your `Cargo.toml` file:
 //!
 //! ```toml
-//! tokio = { version = "1", features = ["full"] }
+//! tsyncp = { version = "0.1" }
 //! ```
 //!
-//! ### Authoring applications
+//! By default, a few features (`json`, `protobuf`, `bincode`) are enabled for uses in
+//! encoding/decoding data.
 //!
-//! Tokio is great for writing applications and most users in this case shouldn't
-//! worry too much about what features they should pick. If you're unsure, we suggest
-//! going with `full` to ensure that you don't run into any road blocks while you're
-//! building your application.
-//!
-//! #### Example
-//!
-//! This example shows the quickest way to get started with Tokio.
+//! However, if you would like to use other encoding schemes like `rkyv`,
+//! you can disable default-features and include it instead:
 //!
 //! ```toml
-//! tokio = { version = "1", features = ["full"] }
+//! tsyncp = { version = "0.1", default-features = false, features = ["rkyv"] }
 //! ```
 //!
-//! ### Authoring libraries
+//! All possible features are:
+//! * [full]: includes all features.
+//! * [serde]: includes features that are derivable using serde. (json, bincode)
+//! * [json]: serializing/deserializing data as json objects.
+//! * [protobuf]: serializing/deserializing data as protobuf objects.
+//! * [bincode]: encoding/decoding data as compact bytes.
+//! * [speedy]: super fast encoding/decoding of data.
+//! * [rkyv]: super fast encoding/decoding of data and allows zero-copy deserialization.
 //!
-//! As a library author your goal should be to provide the lightest weight crate
-//! that is based on Tokio. To achieve this you should ensure that you only enable
-//! the features you need. This allows users to pick up your crate without having
-//! to enable unnecessary features.
+//! [full]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
+//! [serde]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
+//! [json]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
+//! [protobuf]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
+//! [bincode]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
+//! [speedy]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
+//! [rkyv]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
 //!
-//! #### Example
+//! ## Initializing Channels
 //!
-//! This example shows how you may want to import features for a library that just
-//! needs to `tokio::spawn` and use a `TcpStream`.
+//! We will go through initializing mpsc's Sender and Receiver and try out a few handy tricks.
 //!
-//! ```toml
-//! tokio = { version = "1", features = ["rt", "net"] }
-//! ```
+//! ### Basic Example
 //!
-//! ## Working With Tasks
+//! This example shows the simpliest way to initialize [mpsc]'s [Sender] and [Receiver].
 //!
-//! Asynchronous programs in Rust are based around lightweight, non-blocking
-//! units of execution called [_tasks_][tasks]. The [`tokio::task`] module provides
-//! important tools for working with tasks:
+//! [color-eyre] is used for error handling in the example.
 //!
-//! * The [`spawn`] function and [`JoinHandle`] type, for scheduling a new task
-//!   on the Tokio runtime and awaiting the output of a spawned task, respectively,
-//! * Functions for [running blocking operations][blocking] in an asynchronous
-//!   task context.
+//! [Sender]: crate::mpsc::Sender
+//! [Receiver]: crate::mpsc::Receiver
+//! [color-eyre]: https://docs.rs/color-eyre/latest/color_eyre/
 //!
-//! The [`tokio::task`] module is present only when the "rt" feature flag
-//! is enabled.
+//! ##### Receiver Side:
 //!
-//! [tasks]: task/index.html#what-are-tasks
-//! [`tokio::task`]: crate::task
-//! [`spawn`]: crate::task::spawn()
-//! [`JoinHandle`]: crate::task::JoinHandle
-//! [blocking]: task/index.html#blocking-and-yielding
+//! ```no_run
+//! use color_eyre::Result;
+//! use serde::{Serialize, Deserialize};
+//! use tsyncp::mpsc;
 //!
-//! The [`tokio::sync`] module contains synchronization primitives to use when
-//! needing to communicate or share data. These include:
+//! #[derive(Debug, Clone, Serialize, Deserialize)]
+//! struct Dummy {
+//!     field1: String,
+//!     field2: u64,
+//!     field3: Vec<u8>,
+//! }
 //!
-//! * channels ([`oneshot`], [`mpsc`], and [`watch`]), for sending values
-//!   between tasks,
-//! * a non-blocking [`Mutex`], for controlling access to a shared, mutable
-//!   value,
-//! * an asynchronous [`Barrier`] type, for multiple tasks to synchronize before
-//!   beginning a computation.
-//!
-//! The `tokio::sync` module is present only when the "sync" feature flag is
-//! enabled.
-//!
-//! [`tokio::sync`]: crate::sync
-//! [`Mutex`]: crate::sync::Mutex
-//! [`Barrier`]: crate::sync::Barrier
-//! [`oneshot`]: crate::sync::oneshot
-//! [`mpsc`]: crate::sync::mpsc
-//! [`watch`]: crate::sync::watch
-//!
-//! The [`tokio::time`] module provides utilities for tracking time and
-//! scheduling work. This includes functions for setting [timeouts][timeout] for
-//! tasks, [sleeping][sleep] work to run in the future, or [repeating an operation at an
-//! interval][interval].
-//!
-//! In order to use `tokio::time`, the "time" feature flag must be enabled.
-//!
-//! [`tokio::time`]: crate::time
-//! [sleep]: crate::time::sleep()
-//! [interval]: crate::time::interval()
-//! [timeout]: crate::time::timeout()
-//!
-//! Finally, Tokio provides a _runtime_ for executing asynchronous tasks. Most
-//! applications can use the [`#[tokio::main]`][main] macro to run their code on the
-//! Tokio runtime. However, this macro provides only basic configuration options. As
-//! an alternative, the [`tokio::runtime`] module provides more powerful APIs for configuring
-//! and managing runtimes. You should use that module if the `#[tokio::main]` macro doesn't
-//! provide the functionality you need.
-//!
-//! Using the runtime requires the "rt" or "rt-multi-thread" feature flags, to
-//! enable the basic [single-threaded scheduler][rt] and the [thread-pool
-//! scheduler][rt-multi-thread], respectively. See the [`runtime` module
-//! documentation][rt-features] for details. In addition, the "macros" feature
-//! flag enables the `#[tokio::main]` and `#[tokio::test]` attributes.
-//!
-//! [main]: attr.main.html
-//! [`tokio::runtime`]: crate::runtime
-//! [`Builder`]: crate::runtime::Builder
-//! [`Runtime`]: crate::runtime::Runtime
-//! [rt]: runtime/index.html#current-thread-scheduler
-//! [rt-multi-thread]: runtime/index.html#multi-thread-scheduler
-//! [rt-features]: runtime/index.html#runtime-scheduler
-//!
-//! ## CPU-bound tasks and blocking code
-//!
-//! Tokio is able to concurrently run many tasks on a few threads by repeatedly
-//! swapping the currently running task on each thread. However, this kind of
-//! swapping can only happen at `.await` points, so code that spends a long time
-//! without reaching an `.await` will prevent other tasks from running. To
-//! combat this, Tokio provides two kinds of threads: Core threads and blocking
-//! threads. The core threads are where all asynchronous code runs, and Tokio
-//! will by default spawn one for each CPU core. The blocking threads are
-//! spawned on demand, can be used to run blocking code that would otherwise
-//! block other tasks from running and are kept alive when not used for a certain
-//! amount of time which can be configured with [`thread_keep_alive`].
-//! Since it is not possible for Tokio to swap out blocking tasks, like it
-//! can do with asynchronous code, the upper limit on the number of blocking
-//! threads is very large. These limits can be configured on the [`Builder`].
-//!
-//! To spawn a blocking task, you should use the [`spawn_blocking`] function.
-//!
-//! [`Builder`]: crate::runtime::Builder
-//! [`spawn_blocking`]: crate::task::spawn_blocking()
-//! [`thread_keep_alive`]: crate::runtime::Builder::thread_keep_alive()
-//!
-//! ```
 //! #[tokio::main]
-//! async fn main() {
-//!     // This is running on a core thread.
+//! async fn main() -> Result<()> {
+//!     // This will create a mpsc::Receiver that can accept connections on `localhost:8000`
+//!     // and receive json data.
+//!     // `JsonReceiver<Dummy>` is a type alias for `Recevier<Dummy, JsonCodec>`.
+//!     // `recv_on(..)` can take any parameter types that implements `ToSocketAddrs`.
+//!     let mut receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:8000").await?;
 //!
-//!     let blocking_task = tokio::task::spawn_blocking(|| {
-//!         // This is running on a blocking thread.
-//!         // Blocking here is ok.
-//!     });
+//!     // Accept a connection to receive items!
+//!     // Not accepting any connection before calling `recv()` will returning `None`.
+//!     receiver.accept().await?;
 //!
-//!     // We can wait for the blocking task like this:
-//!     // If the blocking task panics, the unwrap below will propagate the
-//!     // panic.
-//!     blocking_task.await.unwrap();
+//!     if let Some(item) = receiver.recv().await {
+//!         let item = item?;
+//!
+//!         println!("received item: {item:?}");
+//!     }
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ##### Sender Side:
+//!
+//! ```no_run
+//! use color_eyre::Result;
+//! use serde::{Serialize, Deserialize};
+//! use tsyncp::mpsc;
+//!
+//! #[derive(Debug, Clone, Serialize, Deserialize)]
+//! struct Dummy {
+//!     field1: String,
+//!     field2: u64,
+//!     field3: Vec<u8>,
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<()> {
+//!     // After receiver application is running,
+//!     // connect to receiver listening on `localhost:8000` with `send_to` function.
+//!     // `JsonSender<Dummy>` is a type alias for `Sender<Dummy, JsonCodec>`.
+//!     let mut sender: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:8000").await?;
+//!
+//!     let dummy = Dummy {
+//!         field1: String::from("hello world"),
+//!         field2: 1234567,
+//!         field3: vec![1, 2, 3, 4]
+//!     };
+//!
+//!     sender.send(dummy).await?;
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! That was so easy!
+//!
+//! However, there are couple things that makes it annoying to use:
+//! * You have to call `receiver.accept().await?` in another line to accept connection
+//! after initializing the receiver, which can be annoying.
+//! * Before running the sender application, you have to make sure receiver application is running and accepting connections,
+//! or else sender application will return `ConnectionRefused` error.
+//!
+//! We can solve these issues easily, shown in the below example.
+//!
+//! ### Example appending `.accept()` and `.retry()` to futures.
+//!
+//! ##### Receiver Side:
+//!
+//! ```no_run
+//! use color_eyre::Result;
+//! use serde::{Serialize, Deserialize};
+//! use tsyncp::mpsc;
+//!
+//! #[derive(Debug, Clone, Serialize, Deserialize)]
+//! struct Dummy {
+//!     field1: String,
+//!     field2: u64,
+//!     field3: Vec<u8>,
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<()> {
+//!     // This will create a mpsc::Receiver and wait to accept 1 connection on `localhost:8000` before returning the
+//!     // receiver. This way, there's no need to write a new line to accept a connection, though you
+//!     // still can.
+//!     let mut receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:8000").accept(1).await?;
+//!
+//!     // no need for separate accepting
+//!     // receiver.accept().await?;
+//!
+//!     if let Some(item) = receiver.recv().await {
+//!         let item = item?;
+//!
+//!         println!("received item: {item:?}");
+//!     }
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ##### Sender Side:
+//!
+//! ```no_run
+//! use color_eyre::Result;
+//! use serde::{Serialize, Deserialize};
+//! use std::time::Duration;
+//! use tsyncp::mpsc;
+//!
+//! #[derive(Debug, Clone, Serialize, Deserialize)]
+//! struct Dummy {
+//!     field1: String,
+//!     field2: u64,
+//!     field3: Vec<u8>,
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<()> {
+//!     let retry_interval = Duration::from_millis(500);
+//!     let max_retries = 100;
+//!
+//!     // This will create a Sender and retry initializing a connection to `localhost:8000`
+//!     // 100 times with interval of 500 ms.
+//!     let mut sender: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:8000")
+//!         .retry(retry_interval, max_retries)
+//!         .await?;
+//!
+//!     let dummy = Dummy {
+//!         field1: String::from("hello world"),
+//!         field2: 1234567,
+//!         field3: vec![1, 2, 3, 4]
+//!     };
+//!
+//!     sender.send(dummy).await?;
+//!
+//!     Ok(())
 //! }
 //! ```
 //!

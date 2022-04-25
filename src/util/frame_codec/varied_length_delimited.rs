@@ -143,7 +143,7 @@ impl VariedLengthDelimitedCodec {
     ///
     /// ```
     /// use tokio::io::{AsyncRead, AsyncWrite};
-    /// use tsyncp::codec::length_delimited::VariedLengthDelimitedCodec;
+    /// use tsyncp::util::frame_codec::VariedLengthDelimitedCodec;
     ///
     /// fn write_frame<T: AsyncRead + AsyncWrite>(io: T) {
     ///     let framed = VariedLengthDelimitedCodec::new().into_framed(io);
