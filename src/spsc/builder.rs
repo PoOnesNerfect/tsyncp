@@ -66,6 +66,7 @@ pub(crate) fn receiver_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     }
 }
 
+#[derive(Debug)]
 #[pin_project]
 pub struct SenderToBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
@@ -223,6 +224,7 @@ where
     }
 }
 
+#[derive(Debug)]
 #[pin_project]
 pub struct SenderOnBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
@@ -379,6 +381,7 @@ where
     }
 }
 
+#[derive(Debug)]
 #[pin_project]
 pub struct ReceiverToBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
@@ -536,6 +539,7 @@ where
     }
 }
 
+#[derive(Debug)]
 #[pin_project]
 pub struct ReceiverOnBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]

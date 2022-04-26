@@ -36,6 +36,7 @@ pub fn wait_to<A: 'static + Clone + Send + ToSocketAddrs>(
     builder::new_waiter(dest)
 }
 
+#[derive(Debug)]
 #[pin_project::pin_project]
 pub struct Waiter<S = tcp::OwnedReadHalf>(#[pin] pub(crate) channel::Channel<(), EmptyCodec, S>);
 
@@ -76,6 +77,7 @@ where
     }
 }
 
+#[derive(Debug)]
 #[pin_project::pin_project]
 pub struct Barrier<const N: usize = 0, L: Accept = WriteListener<TcpListener>>(
     #[pin] multi_channel::Channel<(), EmptyCodec, N, L>,

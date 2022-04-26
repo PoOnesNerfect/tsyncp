@@ -38,6 +38,7 @@ pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
     }
 }
 
+#[derive(Debug)]
 #[pin_project]
 pub struct ChannelBuilderFuture<A, T, E, Filter, Fut, const N: usize = 0, L = TcpListener>
 where

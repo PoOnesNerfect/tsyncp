@@ -48,6 +48,7 @@ pub(crate) fn new<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     }
 }
 
+#[derive(Debug)]
 #[pin_project]
 pub struct ChannelBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     addr: A,

@@ -12,6 +12,7 @@ use futures::{ready, Future};
 use futures::{Sink, SinkExt};
 use futures::{Stream, StreamExt};
 use snafu::{ensure, Backtrace, ResultExt};
+use std::fmt;
 use std::io::ErrorKind;
 use std::marker::PhantomData;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -81,6 +82,8 @@ impl<T, E, const N: usize, L> Split for Channel<T, E, N, L>
 where
     L: Accept,
     L::Output: Split,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
 {
     type Left = Channel<T, E, N, ReadListener<L>>;
     type Right = Channel<T, E, N, WriteListener<L>>;

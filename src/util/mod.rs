@@ -2,6 +2,7 @@ use errors::*;
 use frame_codec::VariedLengthDelimitedCodec;
 use futures::ready;
 use snafu::{Backtrace, ResultExt};
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
@@ -27,7 +28,7 @@ pub struct TcpStreamSettings {
 }
 
 pub trait Accept {
-    type Output;
+    type Output: fmt::Debug;
     type Config: ConfigTrait;
     type Error: 'static + std::error::Error;
 
@@ -38,8 +39,8 @@ pub trait Accept {
     ) -> Poll<Result<(Self::Output, SocketAddr), Self::Error>>;
 }
 
-pub trait ConfigTrait: PartialEq + Clone {}
-impl<T: PartialEq + Clone> ConfigTrait for T {}
+pub trait ConfigTrait: fmt::Debug + PartialEq + Clone {}
+impl<T: fmt::Debug + PartialEq + Clone> ConfigTrait for T {}
 
 impl Accept for TcpListener {
     type Output = TcpStream;
@@ -68,10 +69,13 @@ impl Accept for TcpListener {
     }
 }
 
+#[derive(Debug)]
 pub struct ListenerWrapper<L>
 where
     L: Accept,
     L::Output: Split,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
 {
     listener: L,
     r_ret: Arc<
@@ -92,6 +96,8 @@ impl<L> ListenerWrapper<L>
 where
     L: Accept,
     L::Output: Split,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
 {
     pub fn into_inner(self) -> L {
         self.listener
@@ -102,6 +108,8 @@ impl<L> From<L> for ListenerWrapper<L>
 where
     L: Accept,
     L::Output: Split,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
 {
     fn from(listener: L) -> Self {
         Self {
@@ -116,7 +124,8 @@ impl<L> Accept for ListenerWrapper<L>
 where
     L: Accept,
     L::Output: Split,
-    L::Error: 'static,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
 {
     type Output = L::Output;
     type Config = L::Config;
@@ -136,8 +145,8 @@ impl<L> ListenerWrapper<L>
 where
     L: Accept,
     L::Output: Split,
-    SocketAddr: Clone,
-    L::Error: 'static,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
 {
     pub fn poll_accept_r(
         &self,
@@ -210,10 +219,13 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct ReadListener<L>
 where
     L: Accept,
     L::Output: Split,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
 {
     listener: Arc<ListenerWrapper<L>>,
 }
@@ -222,7 +234,8 @@ impl<L> Accept for ReadListener<L>
 where
     L: Accept,
     L::Output: Split,
-    L::Error: 'static,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
 {
     type Output = <<L as Accept>::Output as Split>::Left;
     type Config = L::Config;
@@ -237,10 +250,13 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct WriteListener<L>
 where
     L: Accept,
     L::Output: Split,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
 {
     listener: Arc<ListenerWrapper<L>>,
 }
@@ -249,7 +265,8 @@ impl<L> Accept for WriteListener<L>
 where
     L: Accept,
     L::Output: Split,
-    L::Error: 'static,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
 {
     type Output = <<L as Accept>::Output as Split>::Right;
     type Config = L::Config;
@@ -277,6 +294,8 @@ impl<L> Split for ListenerWrapper<L>
 where
     L: Accept,
     L::Output: Split,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
 {
     type Left = ReadListener<L>;
     type Right = WriteListener<L>;

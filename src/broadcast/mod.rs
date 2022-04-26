@@ -61,6 +61,7 @@ pub fn recv_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     builder::new_receiver(dest)
 }
 
+#[derive(Debug)]
 #[pin_project::pin_project]
 pub struct Receiver<T, E, S = tcp::OwnedReadHalf>(#[pin] channel::Channel<T, E, S>);
 
@@ -99,6 +100,7 @@ where
     }
 }
 
+#[derive(Debug)]
 #[pin_project::pin_project]
 pub struct Sender<T, E, const N: usize = 0, L: Accept = WriteListener<TcpListener>>(
     #[pin] multi_channel::Channel<T, E, N, L>,

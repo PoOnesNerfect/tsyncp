@@ -5,6 +5,7 @@ use errors::*;
 use futures::{ready, Future};
 use pin_project::pin_project;
 use snafu::{Backtrace, ResultExt};
+use std::fmt;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::task::Poll;
 use std::time::Duration;
@@ -38,6 +39,7 @@ pub(crate) fn new_receiver<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
     }
 }
 
+#[derive(Debug)]
 #[pin_project]
 pub struct SenderBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
@@ -195,6 +197,7 @@ where
     }
 }
 
+#[derive(Debug)]
 #[pin_project]
 pub struct ReceiverBuilderFuture<A, T, E, Filter, Fut, const N: usize = 0, L = TcpListener>
 where
@@ -435,6 +438,8 @@ impl<A, T, E, Filter, Fut, const N: usize, L> Future
 where
     L: Accept,
     L::Output: Split,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
     Filter: Fn(SocketAddr) -> bool,
     Fut: Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N, L>>>,
 {

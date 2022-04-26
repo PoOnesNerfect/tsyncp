@@ -6,6 +6,7 @@ use errors::*;
 use futures::{ready, Future};
 use pin_project::pin_project;
 use snafu::{Backtrace, ResultExt};
+use std::fmt;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::task::Poll;
 use std::time::Duration;
@@ -35,6 +36,7 @@ pub(crate) fn new_barrier<A: 'static + Send + Clone + ToSocketAddrs>(
     }
 }
 
+#[derive(Debug)]
 #[pin_project]
 pub struct WaiterBuilderFuture<A, Filter, Fut, S = TcpStream> {
     #[pin]
@@ -176,6 +178,7 @@ where
     }
 }
 
+#[derive(Debug)]
 #[pin_project]
 pub struct BarrierBuilderFuture<A, Filter, Fut, const N: usize = 0, L = TcpListener>
 where
@@ -390,6 +393,8 @@ where
     Filter: Fn(SocketAddr) -> bool,
     L: Accept,
     L::Output: Split,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
 {
     type Output = Result<Barrier<N, WriteListener<L>>, BarrierBuilderError>;
 
