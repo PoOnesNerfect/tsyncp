@@ -36,10 +36,8 @@ async fn main() {
 
 async fn try_main() -> Result<()> {
     let receiver_handle = tokio::spawn(async move {
-        let mut receiever: broadcast::ProtobufSender<Dummy> = broadcast::send_on(ADDR)
-            .limit(LEN)
-            .accept_full()
-            .await?;
+        let mut receiever: broadcast::ProtobufSender<Dummy> =
+            broadcast::send_on(ADDR).limit(LEN).accept_full().await?;
 
         // let (mut receiever, _sender) = receiever.split()?;
 

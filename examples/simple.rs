@@ -1,4 +1,4 @@
-use color_eyre::Result;
+use color_eyre::{Report, Result};
 use env_logger::Env;
 use futures::future::try_join_all;
 use log::{error, info};
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use tsyncp::{channel, multi_channel};
 
-const COUNT: usize = 100_000;
+const COUNT: usize = 1000_000;
 const LEN: usize = 10;
 
 const ADDR: &str = "localhost:8000";
@@ -36,53 +36,56 @@ async fn main() {
 
 async fn try_main() -> Result<()> {
     let receiver_handle = tokio::spawn(async move {
-        let mut receiever: multi_channel::ProtobufChannel<Dummy> = multi_channel::channel_on(ADDR)
+        let channel: multi_channel::ProtobufChannel<Dummy> = multi_channel::channel_on(ADDR)
             .limit(LEN)
             .accept_full()
             .await?;
-        // info!("Receiver: {:#?}", receiever);
 
-        let addrs = receiever.peer_addrs();
+        let (mut rx, mut tx) = channel.split();
 
-        let now = Instant::now();
-        for i in 0..COUNT {
-            receiever
-                .send_to(
-                    Dummy {
-                        field1: "hello world".to_string(),
-                        field2: 123213,
-                        field3: i as u64,
-                    },
-                    &addrs,
-                )
+        let tx_handle = tokio::spawn(async move {
+            let now = Instant::now();
+            for i in 0..COUNT {
+                tx.send(Dummy {
+                    field1: "hello world".to_string(),
+                    field2: 123213,
+                    field3: i as u64,
+                })
                 .await?;
-        }
-        let duration = Instant::now() - now;
-        info!("sending {} msgs took {:?}", COUNT, duration);
+            }
+            let duration = Instant::now() - now;
+            info!("sending {} msgs took {:?}", COUNT, duration);
 
-        let mut i = 0;
-        let now = Instant::now();
-        while let Some((item, addr)) = receiever.recv_with_addr().await {
-            let item = item?;
+            Ok::<_, Report>(())
+        });
 
-            i += 1;
+        let rx_handle = tokio::spawn(async move {
+            let mut i = 0;
+            let now = Instant::now();
+            while let Some((item, _addr)) = rx.recv_with_addr().await {
+                let item = item?;
 
-            if i % (COUNT * LEN / 10) == 0 {
-                // info!("receiver: received {i} msgs from {addr}: {item:?}");
-                if i % (COUNT * LEN) == 0 {
-                    break;
+                i += 1;
+
+                if i % (COUNT * LEN / 10) == 0 {
+                    // info!("receiver: received {i} msgs from {addr}: {item:?}");
+                    if i % (COUNT * LEN) == 0 {
+                        break;
+                    }
                 }
             }
-        }
-        let duration = Instant::now() - now;
-        info!(
-            "receiver: receiving {} msgs took {:?}",
-            COUNT * LEN,
-            duration
-        );
+            let duration = Instant::now() - now;
+            info!(
+                "receiver: receiving {} msgs took {:?}",
+                COUNT * LEN,
+                duration
+            );
 
-        let addrs = receiever.peer_addrs();
-        info!("addrs: {addrs:?}");
+            Ok::<_, Report>(())
+        });
+
+        tx_handle.await??;
+        rx_handle.await??;
 
         Ok::<_, color_eyre::Report>(())
     });
@@ -90,51 +93,59 @@ async fn try_main() -> Result<()> {
     let handles = (0..LEN)
         .map(|n| {
             tokio::spawn(async move {
-                let mut sender: channel::ProtobufChannel<Dummy> = channel::channel_to(ADDR)
+                let channel: channel::ProtobufChannel<Dummy> = channel::channel_to(ADDR)
                     .retry(Duration::from_millis(500), 100)
                     .await?;
-                info!("{n}: addr: {}", sender.local_addr());
+
+                let (mut rx, mut tx) = channel.split();
 
                 let mut i = 0;
 
-                let now = Instant::now();
-                while let Some(Ok(_)) = sender.recv().await {
-                    i += 1;
+                let rx_handle = tokio::spawn(async move {
+                    let now = Instant::now();
+                    while let Some(Ok(_)) = rx.recv().await {
+                        i += 1;
 
-                    if i % (COUNT / 10) == 0 {
-                        // info!("{n}: received {i} msgs");
-                        if i % COUNT == 0 {
-                            break;
+                        if i % (COUNT / 10) == 0 {
+                            info!("{n}: received {i} msgs");
+                            if i % COUNT == 0 {
+                                break;
+                            }
                         }
                     }
-                }
-                let duration = Instant::now() - now;
+                    let duration = Instant::now() - now;
 
-                info!("{n}: receiving {COUNT} msgs took {duration:?}");
+                    info!("{n}: receiving {COUNT} msgs took {duration:?}");
+                });
 
-                let now = Instant::now();
-                let mut i = 0;
+                let tx_handle = tokio::spawn(async move {
+                    let now = Instant::now();
+                    let mut i = 0;
 
-                while i < COUNT {
-                    sender
-                        .send(Dummy {
+                    while i < COUNT {
+                        tx.send(Dummy {
                             field1: "hello world".to_string(),
                             field2: 123213,
                             field3: i as u64,
                         })
                         .await?;
 
-                    i += 1;
+                        i += 1;
 
-                    if i % (COUNT / 10) == 0 {
-                        // info!("{n}: sent {i} msgs");
-                        if i % COUNT == 0 {
-                            break;
+                        if i % (COUNT / 10) == 0 {
+                            info!("{n}: sent {i} msgs");
+                            if i % COUNT == 0 {
+                                break;
+                            }
                         }
                     }
-                }
-                let duration = Instant::now() - now;
-                info!("{n}: sending {COUNT} msgs took {duration:?}");
+                    let duration = Instant::now() - now;
+                    info!("{n}: sending {COUNT} msgs took {duration:?}");
+                    Ok::<_, Report>(())
+                });
+
+                rx_handle.await?;
+                tx_handle.await??;
 
                 Ok::<_, color_eyre::Report>(())
             })

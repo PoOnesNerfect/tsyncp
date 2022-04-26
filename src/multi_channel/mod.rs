@@ -78,6 +78,23 @@ where
     }
 }
 
+impl<T, E, const N: usize, L> Channel<T, E, N, L>
+where
+    L: Accept,
+    L::Output: Split,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
+{
+    pub fn split(
+        self,
+    ) -> (
+        Channel<T, E, N, ReadListener<L>>,
+        Channel<T, E, N, WriteListener<L>>,
+    ) {
+        Split::split(self)
+    }
+}
+
 impl<T, E, const N: usize, L> Split for Channel<T, E, N, L>
 where
     L: Accept,
