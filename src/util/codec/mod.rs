@@ -5,21 +5,21 @@
 //! [tokio_util::codec]: https://docs.rs/tokio-util/latest/tokio_util/codec/index.html
 
 use bytes::{Bytes, BytesMut};
-use std::fmt;
+use std::io;
 
 #[cfg(feature = "serde")]
 use serde::{de::DeserializeOwned, Serialize};
 
 /// Trait for encoding methods which converts a given item into bytes.
-pub trait EncodeMethod<T>: std::fmt::Debug {
-    type Error: 'static + fmt::Debug + std::error::Error;
+pub trait EncodeMethod<T> {
+    type Error: 'static + std::error::Error;
 
     fn encode(data: &T) -> Result<Bytes, Self::Error>;
 }
 
 /// Trait for decoding methods which converts given bytes into an item.
-pub trait DecodeMethod<T>: std::fmt::Debug {
-    type Error: 'static + fmt::Debug + std::error::Error;
+pub trait DecodeMethod<T> {
+    type Error: 'static + std::error::Error;
 
     fn decode(bytes: BytesMut) -> Result<T, Self::Error>;
 }
@@ -28,18 +28,32 @@ pub trait DecodeMethod<T>: std::fmt::Debug {
 pub struct EmptyCodec;
 
 impl EncodeMethod<()> for EmptyCodec {
-    type Error = serde_json::Error;
+    type Error = io::Error;
 
-    fn encode(data: &()) -> Result<Bytes, Self::Error> {
-        Ok(Bytes::new())
+    fn encode(_: &()) -> Result<Bytes, Self::Error> {
+        Ok(Bytes::from([0].as_ref()))
     }
 }
 
 impl DecodeMethod<()> for EmptyCodec {
-    type Error = serde_json::Error;
+    type Error = io::Error;
 
     fn decode(bytes: BytesMut) -> Result<(), Self::Error> {
-        Ok(())
+        if bytes.len() == 1 {
+            if bytes[0] == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "[EmptyCodec] Received byte that is not 0u8",
+                ))
+            }
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "[EmptyCodec] Received bytes lenngth greater than 1",
+            ))
+        }
     }
 }
 
@@ -54,7 +68,7 @@ mod rkyv_mod {
             CompositeSerializerError, FallbackScratch, HeapScratch, SharedSerializeMap,
             SharedSerializeMapError,
         },
-        AlignedVec, Deserialize, Fallible, Infallible,
+        AlignedVec,
     };
 
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -85,7 +99,7 @@ mod rkyv_mod {
     impl<T: rkyv::Archive> DecodeMethod<T> for RkyvCodec {
         type Error = std::convert::Infallible;
 
-        fn decode(mut bytes: BytesMut) -> Result<T, Self::Error> {
+        fn decode(_bytes: BytesMut) -> Result<T, Self::Error> {
             // let archived = unsafe { rkyv::archived_root::<T>(&bytes[..]) };
             // let t: T = archived.deserialize(&mut rkyv::Infallible).unwrap();
 

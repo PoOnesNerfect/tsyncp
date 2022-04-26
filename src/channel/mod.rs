@@ -1,18 +1,13 @@
 use crate::util::codec::{DecodeMethod, EncodeMethod};
-use crate::util::frame_codec::VariedLengthDelimitedCodec;
-use crate::util::split::{split_framed, RWSplit};
-use crate::util::{split::TcpSplit, Framed, TypeName};
-use bytes::Bytes;
+use crate::util::{Framed, Split};
 use errors::*;
 use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
-use snafu::{Backtrace, ResultExt};
-use std::fmt;
+use snafu::{ensure, Backtrace, ResultExt};
 use std::marker::PhantomData;
-use std::net::SocketAddr;
-use std::net::ToSocketAddrs;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::task::Poll;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_util::codec::{Decoder, Encoder};
+use tokio::net::TcpStream;
 
 pub mod builder;
 
@@ -31,9 +26,8 @@ pub fn channel_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    TcpSplit,
-    impl Future<Output = builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
+    impl Future<Output = builder::Result<Channel<T, E>>>,
 > {
     builder::new(dest, false)
 }
@@ -44,27 +38,23 @@ pub fn channel_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    TcpSplit,
-    impl Future<Output = builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
+    impl Future<Output = builder::Result<Channel<T, E>>>,
 > {
     builder::new(local_addr, true)
 }
 
 #[derive(Debug)]
 #[pin_project::pin_project]
-pub struct Channel<T: fmt::Debug, E, RW = TcpSplit> {
+pub struct Channel<T, E, S = TcpStream> {
     #[pin]
-    framed: Framed<RW>,
+    framed: Framed<S>,
     local_addr: SocketAddr,
     peer_addr: SocketAddr,
     _phantom: PhantomData<(T, E)>,
 }
 
-impl<T, E, RW> Channel<T, E, RW>
-where
-    T: fmt::Debug,
-{
+impl<T, E, S> Channel<T, E, S> {
     pub fn local_addr(&self) -> &SocketAddr {
         &self.local_addr
     }
@@ -74,19 +64,24 @@ where
     }
 }
 
-impl<T, E, R, W> Channel<T, E, RWSplit<R, W>>
+impl<T, E, S> Channel<T, E, S>
 where
-    T: fmt::Debug,
+    S: Split,
 {
-    pub fn split(
-        self,
-    ) -> Result<
-        (
-            crate::spsc::Receiver<T, E, RWSplit<R, W>>,
-            crate::spsc::Sender<T, E, RWSplit<R, W>>,
-        ),
-        SplitError,
-    > {
+    pub fn split(self) -> (Channel<T, E, S::Left>, Channel<T, E, S::Right>) {
+        Split::split(self)
+    }
+}
+
+impl<T, E, S> Split for Channel<T, E, S>
+where
+    S: Split,
+{
+    type Left = Channel<T, E, S::Left>;
+    type Right = Channel<T, E, S::Right>;
+    type Error = ChannelUnsplitError<<S as Split>::Error>;
+
+    fn split(self) -> (Self::Left, Self::Right) {
         let Channel {
             framed,
             local_addr,
@@ -94,7 +89,7 @@ where
             ..
         } = self;
 
-        let (r, w) = split_framed(framed).context(FramedSplitSnafu)?;
+        let (r, w) = framed.split();
 
         let r = Channel {
             framed: r,
@@ -110,26 +105,69 @@ where
             _phantom: PhantomData,
         };
 
-        Ok((r.into(), w.into()))
+        (r, w)
+    }
+
+    fn unsplit(left: Self::Left, right: Self::Right) -> Result<Self, Self::Error> {
+        let Channel {
+            framed: l_framed,
+            local_addr: l_local_addr,
+            peer_addr: l_peer_addr,
+            ..
+        } = left;
+
+        let Channel {
+            framed: r_framed,
+            local_addr: r_local_addr,
+            peer_addr: r_peer_addr,
+            ..
+        } = right;
+
+        ensure!(
+            l_local_addr == r_local_addr,
+            UnequalLocalAddrSnafu {
+                l_local_addr,
+                r_local_addr
+            }
+        );
+
+        ensure!(
+            l_peer_addr == r_peer_addr,
+            UnequalPeerAddrSnafu {
+                l_peer_addr,
+                r_peer_addr
+            }
+        );
+
+        let framed = <_>::unsplit(l_framed, r_framed).context(FramedUnsplitSnafu)?;
+
+        Ok(Channel {
+            framed,
+            local_addr: l_local_addr,
+            peer_addr: l_peer_addr,
+            _phantom: PhantomData,
+        })
     }
 }
 
-impl<T, E, RW> Channel<T, E, RW>
+impl<T, E, S> Channel<T, E, S>
 where
-    T: 'static + fmt::Debug,
-    E: 'static + EncodeMethod<T>,
-    RW: AsyncWrite + Unpin,
+    E: EncodeMethod<T>,
+    S: AsyncWrite + Unpin,
 {
-    pub async fn send(&mut self, item: T) -> Result<(), ChannelSinkError<T, E>> {
+    pub async fn send(&mut self, item: T) -> Result<(), ChannelSinkError<E::Error>> {
         SinkExt::send(self, item).await
     }
 }
 
-impl<T: fmt::Debug, E: EncodeMethod<T>, RW: AsyncWrite> Sink<T> for Channel<T, E, RW> {
-    type Error = ChannelSinkError<T, E>;
+impl<T, E: EncodeMethod<T>, S> Sink<T> for Channel<T, E, S>
+where
+    S: AsyncWrite + Unpin,
+{
+    type Error = ChannelSinkError<E::Error>;
 
     fn start_send(self: std::pin::Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
-        let encoded = E::encode(&item).context(ItemEncodeSnafu { item })?;
+        let encoded = E::encode(&item).context(ItemEncodeSnafu)?;
 
         self.project()
             .framed
@@ -167,16 +205,20 @@ impl<T: fmt::Debug, E: EncodeMethod<T>, RW: AsyncWrite> Sink<T> for Channel<T, E
     }
 }
 
-impl<T: 'static + fmt::Debug + Clone, E: 'static + DecodeMethod<T>, RW: AsyncRead + Unpin>
-    Channel<T, E, RW>
+impl<T: Clone, E: DecodeMethod<T>, S> Channel<T, E, S>
+where
+    S: AsyncRead + Unpin,
 {
-    pub async fn recv(&mut self) -> Option<Result<T, ChannelStreamError<T, E>>> {
+    pub async fn recv(&mut self) -> Option<Result<T, ChannelStreamError<E::Error>>> {
         StreamExt::next(self).await
     }
 }
 
-impl<T: fmt::Debug, E: DecodeMethod<T>, RW: AsyncRead> Stream for Channel<T, E, RW> {
-    type Item = Result<T, ChannelStreamError<T, E>>;
+impl<T, E: DecodeMethod<T>, S> Stream for Channel<T, E, S>
+where
+    S: AsyncRead + Unpin,
+{
+    type Item = Result<T, ChannelStreamError<E::Error>>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -195,93 +237,70 @@ impl<T: fmt::Debug, E: DecodeMethod<T>, RW: AsyncRead> Stream for Channel<T, E, 
 }
 
 pub mod errors {
+    use crate::util::frame_codec::errors::LengthDelimitedCodecError;
+
     use super::*;
     use snafu::Snafu;
 
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
-    pub enum ChannelSinkError<T: fmt::Debug, E: EncodeMethod<T>>
+    pub enum ChannelSinkError<E>
     where
-        E::Error: 'static + std::fmt::Debug + std::error::Error,
+        E: 'static + std::error::Error,
     {
-        #[snafu(display("Failed to encode item of {item:?} with {codec}"))]
-        ItemEncode {
-            item: T,
-            #[snafu(implicit)]
-            codec: TypeName<E>,
-            source: E::Error,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("Failed start_send for type {item} with {codec}"))]
+        #[snafu(display("[ChannelSinkError] Failed to encode item"))]
+        ItemEncode { source: E, backtrace: Backtrace },
+        #[snafu(display("[ChannelSinkError] Failed start_send"))]
         StartSend {
-            #[snafu(implicit)]
-            item: TypeName<T>,
-            #[snafu(implicit)]
-            codec: TypeName<E>,
-            source: <VariedLengthDelimitedCodec as Encoder<Bytes>>::Error,
+            source: LengthDelimitedCodecError,
             backtrace: Backtrace,
         },
-        #[snafu(display("Failed poll_ready for type {item} with {codec}"))]
+        #[snafu(display("[ChannelSinkError] Failed poll_ready"))]
         PollReady {
-            #[snafu(implicit)]
-            item: TypeName<T>,
-            #[snafu(implicit)]
-            codec: TypeName<E>,
-            source: <VariedLengthDelimitedCodec as Encoder<Bytes>>::Error,
+            source: LengthDelimitedCodecError,
             backtrace: Backtrace,
         },
-        #[snafu(display("Failed poll_flush for type {item} with {codec}"))]
+        #[snafu(display("[ChannelSinkError] Failed poll_flush"))]
         PollFlush {
-            #[snafu(implicit)]
-            item: TypeName<T>,
-            #[snafu(implicit)]
-            codec: TypeName<E>,
-            source: <VariedLengthDelimitedCodec as Encoder<Bytes>>::Error,
+            source: LengthDelimitedCodecError,
             backtrace: Backtrace,
         },
-        #[snafu(display("Failed poll_close for type {item} with {codec}"))]
+        #[snafu(display("[ChannelSinkError] Failed poll_close"))]
         PollClose {
-            #[snafu(implicit)]
-            item: TypeName<T>,
-            #[snafu(implicit)]
-            codec: TypeName<E>,
-            source: <VariedLengthDelimitedCodec as Encoder<Bytes>>::Error,
+            source: LengthDelimitedCodecError,
             backtrace: Backtrace,
         },
     }
 
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
-    pub enum ChannelStreamError<T, E: DecodeMethod<T>> {
-        #[snafu(display("Failed to decode frame of item type {item} with {codec}"))]
-        FrameDecode {
-            #[snafu(implicit)]
-            item: TypeName<T>,
-            #[snafu(implicit)]
-            codec: TypeName<E>,
-            source: E::Error,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("Failed poll_read for item {item} with {codec}"))]
+    pub enum ChannelStreamError<E>
+    where
+        E: 'static + std::error::Error,
+    {
+        #[snafu(display("[ChannelStreamError] Failed to decode frame of data"))]
+        FrameDecode { source: E, backtrace: Backtrace },
+        #[snafu(display("[ChannelStreamError] Failed poll_read"))]
         PollRead {
-            #[snafu(implicit)]
-            item: TypeName<T>,
-            #[snafu(implicit)]
-            codec: TypeName<E>,
-            source: <VariedLengthDelimitedCodec as Decoder>::Error,
+            source: LengthDelimitedCodecError,
             backtrace: Backtrace,
         },
     }
 
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
-    pub enum SplitError {
-        #[snafu(display("[splitError] Channel can only be split into mpsc::Receiver once"))]
-        AlreadySplit,
-        #[snafu(display("[SplitError] Failed to split Framed"))]
-        FramedSplit {
-            source: crate::util::split::errors::SplitError,
-            backtrace: Backtrace,
+    pub enum ChannelUnsplitError<E: 'static + std::error::Error> {
+        #[snafu(display("[ChannelUnsplitError] Underlying channels' local addrs are different: {l_local_addr:?} != {r_local_addr:?}"))]
+        UnequalLocalAddr {
+            l_local_addr: SocketAddr,
+            r_local_addr: SocketAddr,
         },
+        #[snafu(display("[ChannelUnsplitError] Underlying channels' peer addrs are different: {l_peer_addr:?} != {r_peer_addr:?}"))]
+        UnequalPeerAddr {
+            l_peer_addr: SocketAddr,
+            r_peer_addr: SocketAddr,
+        },
+        #[snafu(display("[ChannelUnsplitError] Failed to unsplit framed"))]
+        FramedUnsplit { source: E, backtrace: Backtrace },
     }
 }

@@ -1,6 +1,5 @@
 use color_eyre::Result;
 use env_logger::Env;
-use futures::future::try_join_all;
 use log::{error, info};
 use prost::Message;
 use serde::{Deserialize, Serialize};

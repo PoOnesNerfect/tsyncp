@@ -1,13 +1,13 @@
+use crate::channel;
 use crate::util::codec::{DecodeMethod, EncodeMethod};
-use crate::util::split::{RWSplit, TcpSplit};
-use crate::{broadcast, channel, mpsc};
+use crate::util::tcp;
+// use crate::{broadcast, channel, mpsc};
 use errors::*;
 use futures::Sink;
 use futures::Stream;
 use futures::{ready, StreamExt};
 use futures::{Future, SinkExt};
 use snafu::{Backtrace, ResultExt};
-use std::fmt;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::task::Poll;
@@ -39,9 +39,8 @@ pub fn send_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    TcpSplit,
-    impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
+    impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
 > {
     builder::sender_to(dest)
 }
@@ -52,9 +51,8 @@ pub fn send_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    TcpSplit,
-    impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
+    impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
 > {
     builder::sender_on(local_addr)
 }
@@ -65,9 +63,8 @@ pub fn recv_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    TcpSplit,
-    impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
+    impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
 > {
     builder::receiver_to(dest)
 }
@@ -78,32 +75,23 @@ pub fn recv_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    TcpSplit,
-    impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
+    impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
 > {
     builder::receiver_on(local_addr)
 }
 
+#[derive(Debug)]
 #[pin_project::pin_project]
-pub struct Sender<T: fmt::Debug, E, RW = TcpSplit>(#[pin] pub(crate) channel::Channel<T, E, RW>);
+pub struct Sender<T, E, S = tcp::OwnedWriteHalf>(#[pin] channel::Channel<T, E, S>);
 
-impl<T: fmt::Debug, E, RW> From<mpsc::Sender<T, E, RW>> for Sender<T, E, RW> {
-    fn from(sender: mpsc::Sender<T, E, RW>) -> Self {
-        Sender(sender.0)
-    }
-}
-
-impl<T: fmt::Debug, E, RW> From<channel::Channel<T, E, RW>> for Sender<T, E, RW> {
-    fn from(channel: channel::Channel<T, E, RW>) -> Self {
+impl<T, E, S> From<channel::Channel<T, E, S>> for Sender<T, E, S> {
+    fn from(channel: channel::Channel<T, E, S>) -> Self {
         Sender(channel)
     }
 }
 
-impl<T, E, RW> Sender<T, E, RW>
-where
-    T: fmt::Debug + Clone,
-{
+impl<T, E, S> Sender<T, E, S> {
     pub fn local_addr(&self) -> &SocketAddr {
         &self.0.local_addr()
     }
@@ -113,37 +101,22 @@ where
     }
 }
 
-impl<T, E, R, W> Sender<T, E, RWSplit<R, W>>
+impl<T, E, S> Sender<T, E, S>
 where
-    T: fmt::Debug,
+    E: EncodeMethod<T>,
+    S: AsyncWrite + Unpin,
 {
-    pub fn split(
-        self,
-    ) -> Result<(Self, Receiver<T, E, RWSplit<R, W>>), channel::errors::SplitError> {
-        let (r, w) = self.0.split()?;
-
-        Ok((w, r))
-    }
-}
-
-impl<T, E, RW> Sender<T, E, RW>
-where
-    T: 'static + fmt::Debug,
-    E: 'static + EncodeMethod<T>,
-    RW: AsyncWrite + Unpin,
-{
-    pub async fn send(&mut self, item: T) -> Result<(), SenderError<T, E>> {
+    pub async fn send(&mut self, item: T) -> Result<(), SenderError<E::Error>> {
         SinkExt::send(self, item).await
     }
 }
 
-impl<T, E, RW> Sink<T> for Sender<T, E, RW>
+impl<T, E, S> Sink<T> for Sender<T, E, S>
 where
-    T: 'static + fmt::Debug,
-    E: 'static + EncodeMethod<T>,
-    RW: AsyncWrite,
+    E: EncodeMethod<T>,
+    S: AsyncWrite + Unpin,
 {
-    type Error = SenderError<T, E>;
+    type Error = SenderError<E::Error>;
 
     fn start_send(self: std::pin::Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
         self.project().0.start_send(item).context(SenderSnafu)
@@ -183,25 +156,17 @@ where
     }
 }
 
+#[derive(Debug)]
 #[pin_project::pin_project]
-pub struct Receiver<T: fmt::Debug, E, RW = TcpSplit>(#[pin] pub(crate) channel::Channel<T, E, RW>);
+pub struct Receiver<T, E, S = tcp::OwnedReadHalf>(#[pin] channel::Channel<T, E, S>);
 
-impl<T: fmt::Debug, E, RW> From<broadcast::Receiver<T, E, RW>> for Receiver<T, E, RW> {
-    fn from(receiver: broadcast::Receiver<T, E, RW>) -> Self {
-        Receiver(receiver.0)
-    }
-}
-
-impl<T: fmt::Debug, E, RW> From<channel::Channel<T, E, RW>> for Receiver<T, E, RW> {
-    fn from(channel: channel::Channel<T, E, RW>) -> Self {
+impl<T, E, S> From<channel::Channel<T, E, S>> for Receiver<T, E, S> {
+    fn from(channel: channel::Channel<T, E, S>) -> Self {
         Receiver(channel)
     }
 }
 
-impl<T, E, RW> Receiver<T, E, RW>
-where
-    T: fmt::Debug + Clone,
-{
+impl<T, E, S> Receiver<T, E, S> {
     pub fn local_addr(&self) -> &SocketAddr {
         &self.0.local_addr()
     }
@@ -211,27 +176,22 @@ where
     }
 }
 
-impl<T, E, R, W> Receiver<T, E, RWSplit<R, W>>
+impl<T, E, S> Receiver<T, E, S>
 where
-    T: fmt::Debug,
+    E: DecodeMethod<T>,
+    S: AsyncRead + Unpin,
 {
-    pub fn split(self) -> Result<(Self, Sender<T, E, RWSplit<R, W>>), channel::errors::SplitError> {
-        self.0.split()
-    }
-}
-
-impl<T: 'static + fmt::Debug + Clone, E: 'static + DecodeMethod<T>, RW: AsyncRead + Unpin>
-    Receiver<T, E, RW>
-{
-    pub async fn recv(&mut self) -> Option<Result<T, ReceiverError<T, E>>> {
+    pub async fn recv(&mut self) -> Option<Result<T, ReceiverError<E::Error>>> {
         self.next().await
     }
 }
 
-impl<T: 'static + fmt::Debug + Clone, E: 'static + DecodeMethod<T>, RW: AsyncRead> Stream
-    for Receiver<T, E, RW>
+impl<T, E, S> Stream for Receiver<T, E, S>
+where
+    E: DecodeMethod<T>,
+    S: AsyncRead + Unpin,
 {
-    type Item = Result<T, ReceiverError<T, E>>;
+    type Item = Result<T, ReceiverError<E::Error>>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -250,28 +210,24 @@ pub mod errors {
     use snafu::Snafu;
 
     #[derive(Debug, Snafu)]
-    #[snafu(display("[SenderError] Failed to send item on mpsc::Sender"))]
+    #[snafu(display("[spsc::SenderError] Failed to send item"))]
     #[snafu(visibility(pub(super)))]
-    pub struct SenderError<T, E>
+    pub struct SenderError<E>
     where
-        T: 'static + fmt::Debug,
-        E: 'static + EncodeMethod<T>,
-        E::Error: 'static + fmt::Debug + std::error::Error,
+        E: 'static + std::error::Error,
     {
-        source: channel::errors::ChannelSinkError<T, E>,
+        source: channel::errors::ChannelSinkError<E>,
         backtrace: Backtrace,
     }
 
     #[derive(Debug, Snafu)]
-    #[snafu(display("[ReceiverError] Failed to receiver item on mpsc::Receiver"))]
+    #[snafu(display("[spsc::ReceiverError] Failed to receiver item"))]
     #[snafu(visibility(pub(super)))]
-    pub struct ReceiverError<T, E>
+    pub struct ReceiverError<E>
     where
-        T: 'static + fmt::Debug,
-        E: 'static + DecodeMethod<T>,
-        E::Error: 'static + fmt::Debug + std::error::Error,
+        E: 'static + std::error::Error,
     {
-        source: channel::errors::ChannelStreamError<T, E>,
+        source: channel::errors::ChannelStreamError<E>,
         backtrace: Backtrace,
     }
 }

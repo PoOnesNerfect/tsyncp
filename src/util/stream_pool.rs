@@ -1,20 +1,18 @@
 use super::frame_codec::{errors::LengthDelimitedCodecError, VariedLengthDelimitedCodec};
-use super::split::{self, errors::SplitError, RWSplit, TcpSplit};
-use super::{Framed, TypeName};
-use crate::util::split::unsplit_framed;
+use super::Framed;
+use super::{errors::SplitError, Split};
 use bytes::{Bytes, BytesMut};
 use errors::*;
 use futures::future::poll_fn;
 use futures::{ready, SinkExt, StreamExt};
 use futures::{sink::Sink, stream::Stream};
 use pin_project::pin_project;
-use snafu::{ensure, Backtrace, Error, ResultExt};
-use std::fmt;
+use snafu::{ensure, Backtrace, ResultExt};
 use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::task::Poll;
-use std::vec::Drain;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_util::codec::FramedParts;
 
 type Result<T, E = StreamPoolError> = std::result::Result<T, E>;
 
@@ -38,51 +36,65 @@ enum Pool<S, const N: usize = 0> {
     },
 }
 
-impl<const N: usize> StreamPool<TcpSplit, N> {
-    pub(crate) fn push_stream(&mut self, stream: TcpSplit, addr: SocketAddr) -> Result<()> {
-        let framed = Framed::new(stream, VariedLengthDelimitedCodec::new());
+impl<S, const N: usize> StreamPool<S, N> {
+    pub fn push_stream(&mut self, stream: S, addr: SocketAddr) -> Result<()> {
+        let parts = FramedParts::new(stream, VariedLengthDelimitedCodec::new());
 
-        self.push(framed, addr)
+        self.push(Framed::from_parts(parts), addr)
     }
 }
 
-impl<R, W, const N: usize> StreamPool<RWSplit<R, W>, N> {
-    pub(crate) fn split(mut self) -> Result<(Self, Self), StreamPoolError> {
+impl<S, const N: usize> Split for StreamPool<S, N>
+where
+    S: Split,
+    S::Error: 'static,
+{
+    type Left = StreamPool<S::Left, N>;
+    type Right = StreamPool<S::Right, N>;
+    type Error = StreamPoolSplitError<S::Error>;
+
+    fn split(mut self) -> (Self::Left, Self::Right) {
         let is_array = self.is_array();
         let limit = self.limit();
-
         let len = self.len();
-        let mut rs = Vec::with_capacity(len);
-        let mut ws = Vec::with_capacity(len);
 
+        let mut left_streams = Vec::with_capacity(len);
+        let mut right_streams = Vec::with_capacity(len);
         let mut addrs = Vec::with_capacity(len);
 
         for _ in 0..len {
             let (rw, addr) = self.pop().expect("element should exist for popping");
-            let (r, w) = split::split_framed(rw).context(SplitSnafu)?;
+            let (r, w) = rw.split();
 
-            rs.push(r);
-            ws.push(w);
+            left_streams.push(r);
+            right_streams.push(w);
             addrs.push(addr);
         }
 
-        let (mut r_pool, mut w_pool) = if is_array {
-            (Self::array(), Self::array())
+        let (mut left, mut right) = if is_array {
+            (StreamPool::<_, N>::array(), StreamPool::<_, N>::array())
         } else if let Some(limit) = limit {
-            (Self::with_limit(limit), Self::with_limit(limit))
+            (StreamPool::with_limit(limit), StreamPool::with_limit(limit))
         } else {
-            (Self::with_capacity(len), Self::with_capacity(len))
+            (
+                StreamPool::with_capacity(len),
+                StreamPool::with_capacity(len),
+            )
         };
 
-        for ((r, w), addr) in rs.into_iter().zip(ws.into_iter()).zip(addrs.into_iter()) {
-            r_pool.push(r, addr);
-            w_pool.push(w, addr);
+        for ((r, w), addr) in left_streams
+            .into_iter()
+            .zip(right_streams.into_iter())
+            .zip(addrs.into_iter())
+        {
+            left.push(r, addr).expect("len should be sufficient");
+            right.push(w, addr).expect("len should be sufficient");
         }
 
-        Ok((r_pool, w_pool))
+        (left, right)
     }
 
-    pub(crate) fn unsplit(mut r_half: Self, mut w_half: Self) -> Result<Self, StreamPoolError> {
+    fn unsplit(mut r_half: Self::Left, mut w_half: Self::Right) -> Result<Self, Self::Error> {
         let is_array = r_half.is_array();
         ensure!(is_array == w_half.is_array(), RWUnequalSnafu);
 
@@ -100,23 +112,24 @@ impl<R, W, const N: usize> StreamPool<RWSplit<R, W>, N> {
             Self::with_capacity(len)
         };
 
-        let mut map = std::collections::HashMap::with_capacity(len);
+        let mut rmap = std::collections::HashMap::with_capacity(len);
+        let mut wmap = std::collections::HashMap::with_capacity(len);
 
         for _ in 0..len {
             let (r, addr) = r_half.pop().expect("element should exist for popping");
-            if let Some(w) = map.remove(&addr) {
-                let unsplit = unsplit_framed(r, w).context(UnsplitSnafu)?;
-                rw.push(unsplit, addr);
+            if let Some(w) = wmap.remove(&addr) {
+                let unsplit = Framed::<S>::unsplit(r, w).context(UnsplitSnafu)?;
+                rw.push(unsplit, addr).expect("len should be sufficient");
             } else {
-                map.insert(addr, r);
+                rmap.insert(addr, r);
             }
 
             let (w, addr) = w_half.pop().expect("element should exist for popping");
-            if let Some(r) = map.remove(&addr) {
-                let unsplit = unsplit_framed(r, w).context(UnsplitSnafu)?;
-                rw.push(unsplit, addr);
+            if let Some(r) = rmap.remove(&addr) {
+                let unsplit = Framed::<S>::unsplit(r, w).context(UnsplitSnafu)?;
+                rw.push(unsplit, addr).expect("len should be sufficient");
             } else {
-                map.insert(addr, w);
+                wmap.insert(addr, w);
             }
         }
 
@@ -384,7 +397,7 @@ impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
                         self.stream_index = (i + 1 + self.stream_index) % len;
                     }
 
-                    return Poll::Ready(Some((item.context(PollNextSnafu { addr }), addr)));
+                    return Poll::Ready(Some((item.context(PollNextSnafu), addr)));
                 }
                 _ => {}
             }
@@ -397,7 +410,7 @@ impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
     }
 }
 
-impl<S: 'static + fmt::Debug + AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
+impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
     pub async fn send_to(
         &mut self,
         item: Bytes,
@@ -427,10 +440,8 @@ impl<S: 'static + fmt::Debug + AsyncWrite + Unpin, const N: usize> StreamPool<S,
 
             // wait for poll ready and start_send
             for i in &indices {
-                let (stream, addr) = self.get_mut(*i).expect("Element should exist with index");
-                if let Err(e) =
-                    ready!(stream.poll_ready_unpin(cx)).context(PollReadySnafu { addr: *addr })
-                {
+                let (stream, _) = self.get_mut(*i).expect("Element should exist with index");
+                if let Err(e) = ready!(stream.poll_ready_unpin(cx)).context(PollReadySnafu) {
                     self.swap_remove(*i);
                     self.sink_errors.push(e);
 
@@ -458,11 +469,11 @@ impl<S: 'static + fmt::Debug + AsyncWrite + Unpin, const N: usize> StreamPool<S,
 
         // wait for poll ready and start_send
         for i in &indices {
-            let (stream, addr) = self.get_mut(*i).expect("Element should exist with index");
+            let (stream, _) = self.get_mut(*i).expect("Element should exist with index");
 
             if let Err(e) = stream
                 .start_send_unpin(item.clone())
-                .context(StartSendSnafu { addr: *addr })
+                .context(StartSendSnafu)
             {
                 self.swap_remove(*i);
                 self.sink_errors.push(e);
@@ -484,10 +495,8 @@ impl<S: 'static + fmt::Debug + AsyncWrite + Unpin, const N: usize> StreamPool<S,
                 .collect::<Vec<_>>();
 
             for i in indices {
-                let (stream, addr) = self.get_mut(i).expect("Element should exist with index");
-                if let Err(e) =
-                    ready!(stream.poll_flush_unpin(cx)).context(StartSendSnafu { addr: *addr })
-                {
+                let (stream, _) = self.get_mut(i).expect("Element should exist with index");
+                if let Err(e) = ready!(stream.poll_flush_unpin(cx)).context(StartSendSnafu) {
                     self.swap_remove(i);
                     self.sink_errors.push(e);
 
@@ -504,9 +513,7 @@ impl<S: 'static + fmt::Debug + AsyncWrite + Unpin, const N: usize> StreamPool<S,
     }
 }
 
-impl<S: 'static + fmt::Debug + AsyncWrite + Unpin, const N: usize> Sink<Bytes>
-    for StreamPool<S, N>
-{
+impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
     type Error = StreamPoolSinkError;
 
     fn start_send(mut self: std::pin::Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
@@ -517,13 +524,11 @@ impl<S: 'static + fmt::Debug + AsyncWrite + Unpin, const N: usize> Sink<Bytes>
         }
 
         let send = |this: &mut Self, n, t| {
-            let (stream, addr) = this
+            let (stream, _) = this
                 .get_mut(n)
                 .expect("stream should be initialized from 0..len");
 
-            stream
-                .start_send_unpin(t)
-                .context(StartSendSnafu { addr: *addr })
+            stream.start_send_unpin(t).context(StartSendSnafu)
         };
 
         let mut i = 0;
@@ -564,11 +569,10 @@ impl<S: 'static + fmt::Debug + AsyncWrite + Unpin, const N: usize> Sink<Bytes>
         let mut len = self.len();
 
         while i < len {
-            let (stream, addr) = (*self)
+            let (stream, _) = (*self)
                 .get_mut(i)
                 .expect("stream should be initialized from 0..len");
-            let poll_res =
-                ready!(stream.poll_ready_unpin(cx)).context(PollReadySnafu { addr: *addr });
+            let poll_res = ready!(stream.poll_ready_unpin(cx)).context(PollReadySnafu);
 
             if let Err(error) = poll_res {
                 let _removed = self
@@ -599,11 +603,10 @@ impl<S: 'static + fmt::Debug + AsyncWrite + Unpin, const N: usize> Sink<Bytes>
         let mut len = self.len();
 
         while i < len {
-            let (stream, addr) = (*self)
+            let (stream, _) = (*self)
                 .get_mut(i)
                 .expect("stream should be initialized from 0..len");
-            let poll_res =
-                ready!(stream.poll_flush_unpin(cx)).context(PollFlushSnafu { addr: *addr });
+            let poll_res = ready!(stream.poll_flush_unpin(cx)).context(PollFlushSnafu);
 
             if let Err(error) = poll_res {
                 let _removed = self
@@ -630,12 +633,12 @@ impl<S: 'static + fmt::Debug + AsyncWrite + Unpin, const N: usize> Sink<Bytes>
         let mut len = self.len();
 
         while i < len {
-            let (stream, addr) = (*self)
+            let (stream, _) = (*self)
                 .get_mut(i)
                 .expect("stream should be initialized from 0..len");
             let poll_res = ready!(stream.poll_close_unpin(cx));
 
-            if let Err(error) = poll_res.context(PollCloseSnafu { addr: *addr }) {
+            if let Err(error) = poll_res.context(PollCloseSnafu) {
                 let _removed = self
                     .swap_remove(i)
                     .expect("element to remove should exist since it was polled");
@@ -664,21 +667,13 @@ pub mod errors {
             "[StreamPoolError] Cannot add stream to pool as limit {limit} is already reached."
         ))]
         AddStreamLimitReached { limit: usize },
-        #[snafu(display("[StreamPoolError] Failed poll_next for {addr}"))]
+        #[snafu(display("[StreamPoolError] Failed poll_next"))]
         PollNext {
-            addr: SocketAddr,
             source: LengthDelimitedCodecError,
             backtrace: Backtrace,
         },
         #[snafu(display("[StreamPoolError] Failed to split underlying stream"))]
         Split {
-            source: SplitError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[StreamPoolError] Failed to unsplit underlying stream; read half and write half were not equal"))]
-        RWUnequal,
-        #[snafu(display("[StreamPoolError] Failed to unsplit underlying stream"))]
-        Unsplit {
             source: SplitError,
             backtrace: Backtrace,
         },
@@ -739,30 +734,38 @@ pub mod errors {
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
     pub enum StreamPoolPollError {
-        #[snafu(display("[StreamPoolPollError] Error in start_send to {addr}"))]
+        #[snafu(display("[StreamPoolPollError] Error in start_send"))]
         StartSendError {
-            addr: SocketAddr,
             source: LengthDelimitedCodecError,
             backtrace: Backtrace,
         },
-        #[snafu(display("[StreamPoolPollError] Error in poll_ready to {addr}"))]
+        #[snafu(display("[StreamPoolPollError] Error in poll_ready"))]
         PollReadyError {
-            addr: SocketAddr,
             source: LengthDelimitedCodecError,
             backtrace: Backtrace,
         },
-        #[snafu(display("[StreamPoolPollError] Error in poll_flush to {addr}"))]
+        #[snafu(display("[StreamPoolPollError] Error in poll_flush"))]
         PollFlushError {
-            addr: SocketAddr,
             source: LengthDelimitedCodecError,
             backtrace: Backtrace,
         },
-        #[snafu(display("[StreamPoolPollError] Error in poll_close to {addr}"))]
+        #[snafu(display("[StreamPoolPollError] Error in poll_close"))]
         PollCloseError {
-            addr: SocketAddr,
             source: LengthDelimitedCodecError,
             backtrace: Backtrace,
         },
+    }
+
+    #[derive(Debug, Snafu)]
+    #[snafu(visibility(pub(super)))]
+    pub enum StreamPoolSplitError<E>
+    where
+        E: 'static + std::error::Error,
+    {
+        #[snafu(display("[StreamPoolSplitError] Failed to unsplit underlying stream; read half and write half were not equal"))]
+        RWUnequal,
+        #[snafu(display("[StreamPoolSplitError] Failed to unsplit underlying stream"))]
+        Unsplit { source: E, backtrace: Backtrace },
     }
 
     impl StreamPoolPollError {

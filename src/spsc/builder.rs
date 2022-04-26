@@ -1,19 +1,14 @@
 use super::{Receiver, Sender};
 use crate::channel;
-use crate::util::{frame_codec::VariedLengthDelimitedCodec, split::TcpSplit, Framed};
+use crate::util::Split;
 use errors::*;
-use futures::future::Ready;
 use futures::{ready, Future};
 use pin_project::pin_project;
-use snafu::{Backtrace, ResultExt, Snafu};
-use std::marker::PhantomData;
+use snafu::{Backtrace, ResultExt};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::task::Poll;
 use std::time::Duration;
-use std::{fmt, io};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpSocket;
-use tokio::task::JoinError;
+use tokio::net::TcpStream;
 
 pub(crate) fn sender_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     dest: A,
@@ -21,9 +16,8 @@ pub(crate) fn sender_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    TcpSplit,
-    impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
+    impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
 > {
     SenderToBuilderFuture {
         fut: channel::builder::new(dest, false),
@@ -36,9 +30,8 @@ pub(crate) fn sender_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    TcpSplit,
-    impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
+    impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
 > {
     SenderOnBuilderFuture {
         fut: channel::builder::new(local_addr, true),
@@ -51,9 +44,8 @@ pub(crate) fn receiver_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    TcpSplit,
-    impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
+    impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
 > {
     ReceiverToBuilderFuture {
         fut: channel::builder::new(dest, false),
@@ -66,9 +58,8 @@ pub(crate) fn receiver_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    TcpSplit,
-    impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
+    impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
 > {
     ReceiverOnBuilderFuture {
         fut: channel::builder::new(local_addr, true),
@@ -76,12 +67,12 @@ pub(crate) fn receiver_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
 }
 
 #[pin_project]
-pub struct SenderToBuilderFuture<A, T, E, RW, Fut, Filter> {
+pub struct SenderToBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
-    fut: channel::builder::ChannelBuilderFuture<A, T, E, RW, Fut, Filter>,
+    fut: channel::builder::ChannelBuilderFuture<A, T, E, Filter, Fut, S>,
 }
 
-impl<A, T, E, RW, Fut, Filter> SenderToBuilderFuture<A, T, E, RW, Fut, Filter>
+impl<A, T, E, Filter, Fut> SenderToBuilderFuture<A, T, E, Filter, Fut>
 where
     A: 'static + Clone + Send + ToSocketAddrs,
     Filter: Clone + Fn(SocketAddr) -> bool,
@@ -94,9 +85,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderToBuilderFuture {
             fut: self.fut.retry(retry_sleep_duration, max_retries),
@@ -110,9 +100,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderToBuilderFuture {
             fut: self.fut.set_tcp_reuseaddr(reuseaddr),
@@ -131,9 +120,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderToBuilderFuture {
             fut: self.fut.set_tcp_reuseport(reuseport),
@@ -147,9 +135,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderToBuilderFuture {
             fut: self.fut.set_tcp_linger(dur),
@@ -163,9 +150,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderToBuilderFuture {
             fut: self.fut.set_tcp_nodelay(nodelay),
@@ -179,9 +165,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderToBuilderFuture {
             fut: self.fut.set_tcp_ttl(ttl),
@@ -195,9 +180,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderToBuilderFuture {
             fut: self.fut.set_tcp_recv_buffer_size(size),
@@ -211,9 +195,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderToBuilderFuture {
             fut: self.fut.set_tcp_send_buffer_size(size),
@@ -221,44 +204,12 @@ where
     }
 }
 
-impl<A, T, E, RW, Fut, Filter> SenderToBuilderFuture<A, T, E, RW, Fut, Filter> {
-    pub fn with_codec<C>(self) -> SenderToBuilderFuture<A, T, C, RW, Fut, Filter> {
-        SenderToBuilderFuture {
-            fut: self.fut.with_codec(),
-        }
-    }
-
-    pub fn with_stream<S>(
-        self,
-        custom_stream: S,
-        local_addr: SocketAddr,
-        peer_addr: SocketAddr,
-    ) -> SenderToBuilderFuture<
-        A,
-        T,
-        E,
-        S,
-        Ready<Result<S, channel::builder::errors::ChannelBuilderError>>,
-        Filter,
-    > {
-        SenderToBuilderFuture {
-            fut: self.fut.with_stream(custom_stream, local_addr, peer_addr),
-        }
-    }
-}
-
-impl<
-        A,
-        T,
-        E,
-        RW: AsyncRead + AsyncWrite + std::fmt::Debug,
-        Fut: Future<Output = channel::builder::BuildResult<RW>>,
-        Filter,
-    > Future for SenderToBuilderFuture<A, T, E, RW, Fut, Filter>
+impl<A, T, E, Filter, Fut, S> Future for SenderToBuilderFuture<A, T, E, Filter, Fut, S>
 where
-    T: fmt::Debug,
+    S: Split,
+    Fut: Future<Output = channel::builder::Result<channel::Channel<T, E, S>>>,
 {
-    type Output = Result<Sender<T, E, RW>, SenderBuilderError>;
+    type Output = Result<Sender<T, E, S::Right>, SenderBuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
@@ -268,17 +219,17 @@ where
             Err(error) => return Poll::Ready(Err(error)),
         };
 
-        Poll::Ready(Ok::<_, SenderBuilderError>(Sender(channel)))
+        Poll::Ready(Ok(Sender(channel.split().1)))
     }
 }
 
 #[pin_project]
-pub struct SenderOnBuilderFuture<A, T, E, RW, Fut, Filter> {
+pub struct SenderOnBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
-    fut: channel::builder::ChannelBuilderFuture<A, T, E, RW, Fut, Filter>,
+    fut: channel::builder::ChannelBuilderFuture<A, T, E, Filter, Fut, S>,
 }
 
-impl<A, T, E, RW, Fut, Filter> SenderOnBuilderFuture<A, T, E, RW, Fut, Filter>
+impl<A, T, E, Filter, Fut> SenderOnBuilderFuture<A, T, E, Filter, Fut>
 where
     A: 'static + Clone + Send + ToSocketAddrs,
     Filter: Clone + Fn(SocketAddr) -> bool,
@@ -290,9 +241,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter2,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderOnBuilderFuture {
             fut: self.fut.filter(filter),
@@ -306,9 +256,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderOnBuilderFuture {
             fut: self.fut.set_tcp_reuseaddr(reuseaddr),
@@ -327,9 +276,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderOnBuilderFuture {
             fut: self.fut.set_tcp_reuseport(reuseport),
@@ -343,9 +291,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderOnBuilderFuture {
             fut: self.fut.set_tcp_linger(dur),
@@ -359,9 +306,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderOnBuilderFuture {
             fut: self.fut.set_tcp_nodelay(nodelay),
@@ -375,9 +321,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderOnBuilderFuture {
             fut: self.fut.set_tcp_ttl(ttl),
@@ -391,9 +336,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderOnBuilderFuture {
             fut: self.fut.set_tcp_recv_buffer_size(size),
@@ -407,9 +351,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         SenderOnBuilderFuture {
             fut: self.fut.set_tcp_send_buffer_size(size),
@@ -417,44 +360,12 @@ where
     }
 }
 
-impl<A, T, E, RW, Fut, Filter> SenderOnBuilderFuture<A, T, E, RW, Fut, Filter> {
-    pub fn with_codec<C>(self) -> SenderOnBuilderFuture<A, T, C, RW, Fut, Filter> {
-        SenderOnBuilderFuture {
-            fut: self.fut.with_codec(),
-        }
-    }
-
-    pub fn with_stream<S>(
-        self,
-        custom_stream: S,
-        local_addr: SocketAddr,
-        peer_addr: SocketAddr,
-    ) -> SenderOnBuilderFuture<
-        A,
-        T,
-        E,
-        S,
-        Ready<Result<S, channel::builder::errors::ChannelBuilderError>>,
-        Filter,
-    > {
-        SenderOnBuilderFuture {
-            fut: self.fut.with_stream(custom_stream, local_addr, peer_addr),
-        }
-    }
-}
-
-impl<
-        A,
-        T,
-        E,
-        RW: AsyncRead + AsyncWrite + std::fmt::Debug,
-        Fut: Future<Output = channel::builder::BuildResult<RW>>,
-        Filter,
-    > Future for SenderOnBuilderFuture<A, T, E, RW, Fut, Filter>
+impl<A, T, E, Filter, Fut, S> Future for SenderOnBuilderFuture<A, T, E, Filter, Fut, S>
 where
-    T: fmt::Debug,
+    S: Split,
+    Fut: Future<Output = channel::builder::Result<channel::Channel<T, E, S>>>,
 {
-    type Output = Result<Sender<T, E, RW>, SenderBuilderError>;
+    type Output = Result<Sender<T, E, S::Right>, SenderBuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
@@ -464,17 +375,17 @@ where
             Err(error) => return Poll::Ready(Err(error)),
         };
 
-        Poll::Ready(Ok::<_, SenderBuilderError>(Sender(channel)))
+        Poll::Ready(Ok(Sender(channel.split().1)))
     }
 }
 
 #[pin_project]
-pub struct ReceiverToBuilderFuture<A, T, E, RW, Fut, Filter> {
+pub struct ReceiverToBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
-    fut: channel::builder::ChannelBuilderFuture<A, T, E, RW, Fut, Filter>,
+    fut: channel::builder::ChannelBuilderFuture<A, T, E, Filter, Fut, S>,
 }
 
-impl<A, T, E, RW, Fut, Filter> ReceiverToBuilderFuture<A, T, E, RW, Fut, Filter>
+impl<A, T, E, Filter, Fut> ReceiverToBuilderFuture<A, T, E, Filter, Fut>
 where
     A: 'static + Clone + Send + ToSocketAddrs,
     Filter: Clone + Fn(SocketAddr) -> bool,
@@ -487,9 +398,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverToBuilderFuture {
             fut: self.fut.retry(retry_sleep_duration, max_retries),
@@ -503,9 +413,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverToBuilderFuture {
             fut: self.fut.set_tcp_reuseaddr(reuseaddr),
@@ -524,9 +433,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverToBuilderFuture {
             fut: self.fut.set_tcp_reuseport(reuseport),
@@ -540,9 +448,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverToBuilderFuture {
             fut: self.fut.set_tcp_linger(dur),
@@ -556,9 +463,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverToBuilderFuture {
             fut: self.fut.set_tcp_nodelay(nodelay),
@@ -572,9 +478,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverToBuilderFuture {
             fut: self.fut.set_tcp_ttl(ttl),
@@ -588,9 +493,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverToBuilderFuture {
             fut: self.fut.set_tcp_recv_buffer_size(size),
@@ -604,9 +508,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverToBuilderFuture {
             fut: self.fut.set_tcp_send_buffer_size(size),
@@ -614,44 +517,12 @@ where
     }
 }
 
-impl<A, T, E, RW, Fut, Filter> ReceiverToBuilderFuture<A, T, E, RW, Fut, Filter> {
-    pub fn with_codec<C>(self) -> ReceiverToBuilderFuture<A, T, C, RW, Fut, Filter> {
-        ReceiverToBuilderFuture {
-            fut: self.fut.with_codec(),
-        }
-    }
-
-    pub fn with_stream<S>(
-        self,
-        custom_stream: S,
-        local_addr: SocketAddr,
-        peer_addr: SocketAddr,
-    ) -> ReceiverToBuilderFuture<
-        A,
-        T,
-        E,
-        S,
-        Ready<Result<S, channel::builder::errors::ChannelBuilderError>>,
-        Filter,
-    > {
-        ReceiverToBuilderFuture {
-            fut: self.fut.with_stream(custom_stream, local_addr, peer_addr),
-        }
-    }
-}
-
-impl<
-        A,
-        T,
-        E,
-        RW: AsyncRead + AsyncWrite + std::fmt::Debug,
-        Fut: Future<Output = channel::builder::BuildResult<RW>>,
-        Filter,
-    > Future for ReceiverToBuilderFuture<A, T, E, RW, Fut, Filter>
+impl<A, T, E, Fut, Filter, S> Future for ReceiverToBuilderFuture<A, T, E, Filter, Fut, S>
 where
-    T: fmt::Debug,
+    S: Split,
+    Fut: Future<Output = channel::builder::Result<channel::Channel<T, E, S>>>,
 {
-    type Output = Result<Receiver<T, E, RW>, ReceiverBuilderError>;
+    type Output = Result<Receiver<T, E, S::Left>, ReceiverBuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
@@ -661,17 +532,17 @@ where
             Err(error) => return Poll::Ready(Err(error)),
         };
 
-        Poll::Ready(Ok::<_, ReceiverBuilderError>(Receiver(channel)))
+        Poll::Ready(Ok(Receiver(channel.split().0)))
     }
 }
 
 #[pin_project]
-pub struct ReceiverOnBuilderFuture<A, T, E, RW, Fut, Filter> {
+pub struct ReceiverOnBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
-    fut: channel::builder::ChannelBuilderFuture<A, T, E, RW, Fut, Filter>,
+    fut: channel::builder::ChannelBuilderFuture<A, T, E, Filter, Fut, S>,
 }
 
-impl<A, T, E, RW, Fut, Filter> ReceiverOnBuilderFuture<A, T, E, RW, Fut, Filter>
+impl<A, T, E, Filter, Fut> ReceiverOnBuilderFuture<A, T, E, Filter, Fut>
 where
     A: 'static + Clone + Send + ToSocketAddrs,
     Filter: Clone + Fn(SocketAddr) -> bool,
@@ -683,9 +554,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter2,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverOnBuilderFuture {
             fut: self.fut.filter(filter),
@@ -699,9 +569,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverOnBuilderFuture {
             fut: self.fut.set_tcp_reuseaddr(reuseaddr),
@@ -720,9 +589,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverOnBuilderFuture {
             fut: self.fut.set_tcp_reuseport(reuseport),
@@ -736,9 +604,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverOnBuilderFuture {
             fut: self.fut.set_tcp_linger(dur),
@@ -752,9 +619,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverOnBuilderFuture {
             fut: self.fut.set_tcp_nodelay(nodelay),
@@ -768,9 +634,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverOnBuilderFuture {
             fut: self.fut.set_tcp_ttl(ttl),
@@ -784,9 +649,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverOnBuilderFuture {
             fut: self.fut.set_tcp_recv_buffer_size(size),
@@ -800,9 +664,8 @@ where
         A,
         T,
         E,
-        TcpSplit,
-        impl Future<Output = channel::builder::BuildResult<TcpSplit>>,
         Filter,
+        impl Future<Output = channel::builder::Result<channel::Channel<T, E>>>,
     > {
         ReceiverOnBuilderFuture {
             fut: self.fut.set_tcp_send_buffer_size(size),
@@ -810,44 +673,12 @@ where
     }
 }
 
-impl<A, T, E, RW, Fut, Filter> ReceiverOnBuilderFuture<A, T, E, RW, Fut, Filter> {
-    pub fn with_codec<C>(self) -> ReceiverOnBuilderFuture<A, T, C, RW, Fut, Filter> {
-        ReceiverOnBuilderFuture {
-            fut: self.fut.with_codec(),
-        }
-    }
-
-    pub fn with_stream<S>(
-        self,
-        custom_stream: S,
-        local_addr: SocketAddr,
-        peer_addr: SocketAddr,
-    ) -> ReceiverOnBuilderFuture<
-        A,
-        T,
-        E,
-        S,
-        Ready<Result<S, channel::builder::errors::ChannelBuilderError>>,
-        Filter,
-    > {
-        ReceiverOnBuilderFuture {
-            fut: self.fut.with_stream(custom_stream, local_addr, peer_addr),
-        }
-    }
-}
-
-impl<
-        A,
-        T,
-        E,
-        RW: AsyncRead + AsyncWrite + std::fmt::Debug,
-        Fut: Future<Output = channel::builder::BuildResult<RW>>,
-        Filter,
-    > Future for ReceiverOnBuilderFuture<A, T, E, RW, Fut, Filter>
+impl<A, T, E, Filter, Fut, S> Future for ReceiverOnBuilderFuture<A, T, E, Filter, Fut, S>
 where
-    T: fmt::Debug,
+    S: Split,
+    Fut: Future<Output = channel::builder::Result<channel::Channel<T, E, S>>>,
 {
-    type Output = Result<Receiver<T, E, RW>, ReceiverBuilderError>;
+    type Output = Result<Receiver<T, E, S::Left>, ReceiverBuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
@@ -857,7 +688,7 @@ where
             Err(error) => return Poll::Ready(Err(error)),
         };
 
-        Poll::Ready(Ok::<_, ReceiverBuilderError>(Receiver(channel)))
+        Poll::Ready(Ok(Receiver(channel.split().0)))
     }
 }
 

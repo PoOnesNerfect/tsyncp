@@ -1,9 +1,10 @@
 use super::Channel;
-use crate::util::{split::TcpSplit, stream_pool::StreamPool, TcpStreamSettings};
+use crate::util::Accept;
+use crate::util::{stream_pool::StreamPool, TcpStreamSettings};
 use errors::*;
-use futures::{ready, Future};
+use futures::Future;
 use pin_project::pin_project;
-use snafu::{Backtrace, OptionExt, ResultExt};
+use snafu::{Backtrace, ResultExt};
 use std::io;
 use std::marker::PhantomData;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -12,10 +13,7 @@ use std::time::Duration;
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task::JoinError;
 
-type Result<T, E = ChannelBuilderError> = std::result::Result<T, E>;
-
-pub type AcceptResult<const N: usize = 0, S = TcpSplit> =
-    Result<(TcpListener, StreamPool<S, N>, SocketAddr)>;
+pub type Result<T, E = ChannelBuilderError> = std::result::Result<T, E>;
 
 pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
     local_addr: A,
@@ -23,9 +21,8 @@ pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    TcpSplit,
-    impl Future<Output = AcceptResult>,
     impl Clone + Fn(SocketAddr) -> bool,
+    impl Future<Output = Result<Channel<T, E>>>,
 > {
     let filter = |_| true;
     let tcp_settings = TcpSettings::default();
@@ -35,30 +32,27 @@ pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
         tcp_settings,
         limit: None,
         accept: 0,
-        connecting: build_listener::<A, 0, _>(local_addr, None, 0, tcp_settings, filter.clone()),
+        fut: build_tcp_channel::<A, T, E, 0, _>(local_addr, None, 0, tcp_settings, filter.clone()),
         filter,
         _phantom: PhantomData,
     }
 }
 
 #[pin_project]
-pub struct ChannelBuilderFuture<
-    A,
-    T,
-    E,
-    RW,
-    Fut: Future<Output = AcceptResult<N, RW>>,
+pub struct ChannelBuilderFuture<A, T, E, Filter, Fut, const N: usize = 0, L = TcpListener>
+where
     Filter: Fn(SocketAddr) -> bool,
-    const N: usize = 0,
-> {
+    Fut: Future<Output = Result<Channel<T, E, N, L>>>,
+    L: Accept,
+{
     local_addr: A,
     limit: Option<usize>,
     accept: usize,
-    #[pin]
-    connecting: Fut,
     tcp_settings: TcpSettings,
     filter: Filter,
-    _phantom: PhantomData<(T, E, RW)>,
+    #[pin]
+    fut: Fut,
+    _phantom: PhantomData<(T, E)>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -72,49 +66,18 @@ struct TcpSettings {
 }
 
 impl<
-        A,
+        A: 'static + Send + Clone + ToSocketAddrs,
         T,
         E,
-        RW,
-        Fut: Future<Output = AcceptResult<N, RW>>,
-        Filter: Fn(SocketAddr) -> bool,
-        const N: usize,
-    > ChannelBuilderFuture<A, T, E, RW, Fut, Filter, N>
-{
-    pub fn limit(mut self, limit: usize) -> Self {
-        self.limit.replace(limit);
-
-        self
-    }
-
-    pub fn with_codec<C>(mut self) -> ChannelBuilderFuture<A, T, C, RW, Fut, Filter, N> {
-        ChannelBuilderFuture {
-            local_addr: self.local_addr,
-            limit: self.limit,
-            accept: self.accept,
-            filter: self.filter,
-            tcp_settings: self.tcp_settings,
-            connecting: self.connecting,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<
-        A,
-        T,
-        E,
-        Fut: Future<Output = AcceptResult<N>>,
         Filter: Clone + Fn(SocketAddr) -> bool,
+        Fut: Future<Output = Result<Channel<T, E, N>>>,
         const N: usize,
-    > ChannelBuilderFuture<A, T, E, TcpSplit, Fut, Filter, N>
-where
-    A: 'static + Send + Clone + ToSocketAddrs,
+    > ChannelBuilderFuture<A, T, E, Filter, Fut, N>
 {
     pub fn accept(
         mut self,
         accept: usize,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<N>>, Filter, N>
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
     {
         self.accept = accept;
 
@@ -123,7 +86,7 @@ where
 
     pub fn accept_full(
         mut self,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<N>>, Filter, N>
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
     {
         if N > 0 {
             self.accept = N;
@@ -138,7 +101,7 @@ where
         self,
         accept: usize,
         filter: Filter2,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<M>>, Filter2, M>
+    ) -> ChannelBuilderFuture<A, T, E, Filter2, impl Future<Output = Result<Channel<T, E, M>>>, M>
     {
         let ChannelBuilderFuture {
             local_addr,
@@ -152,7 +115,7 @@ where
             tcp_settings,
             limit,
             accept,
-            connecting: build_listener::<A, M, Filter2>(
+            fut: build_tcp_channel::<A, T, E, M, Filter2>(
                 local_addr,
                 limit,
                 accept,
@@ -167,7 +130,7 @@ where
     pub fn accept_filtered_full<const M: usize, Filter2: Clone + Fn(SocketAddr) -> bool>(
         mut self,
         filter: Filter2,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<M>>, Filter2, M>
+    ) -> ChannelBuilderFuture<A, T, E, Filter2, impl Future<Output = Result<Channel<T, E, M>>>, M>
     {
         if M > 0 {
             self.accept = N;
@@ -179,9 +142,19 @@ where
         self.accept_filtered(accept, filter)
     }
 
+    pub fn limit(
+        mut self,
+        limit: usize,
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
+    {
+        self.limit.replace(limit);
+
+        self.refresh()
+    }
+
     pub fn limit_const<const M: usize>(
         self,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<M>>, Filter, M>
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, M>>>, M>
     {
         self.refresh()
     }
@@ -189,7 +162,7 @@ where
     pub fn set_tcp_reuseaddr(
         mut self,
         reuseaddr: bool,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<N>>, Filter, N>
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
     {
         self.tcp_settings.reuseaddr.replace(reuseaddr);
 
@@ -204,7 +177,7 @@ where
     pub fn set_tcp_reuseport(
         mut self,
         reuseport: bool,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<N>>, Filter, N>
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
     {
         self.tcp_settings.reuseport.replace(reuseport);
 
@@ -214,7 +187,7 @@ where
     pub fn set_tcp_linger(
         mut self,
         dur: Option<Duration>,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<N>>, Filter, N>
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
     {
         self.tcp_settings.linger.replace(dur);
 
@@ -224,7 +197,7 @@ where
     pub fn set_tcp_nodelay(
         mut self,
         nodelay: bool,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<N>>, Filter, N>
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
     {
         self.tcp_settings.stream_settings.nodelay.replace(nodelay);
 
@@ -234,7 +207,7 @@ where
     pub fn set_tcp_ttl(
         mut self,
         ttl: u32,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<N>>, Filter, N>
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
     {
         self.tcp_settings.stream_settings.ttl.replace(ttl);
 
@@ -244,7 +217,7 @@ where
     pub fn set_tcp_recv_buffer_size(
         mut self,
         size: u32,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<N>>, Filter, N>
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
     {
         self.tcp_settings.recv_buffer_size.replace(size);
 
@@ -254,7 +227,7 @@ where
     pub fn set_tcp_send_buffer_size(
         mut self,
         size: u32,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<N>>, Filter, N>
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
     {
         self.tcp_settings.send_buffer_size.replace(size);
 
@@ -263,7 +236,7 @@ where
 
     fn refresh<const M: usize>(
         self,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = AcceptResult<M>>, Filter, M>
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, M>>>, M>
     {
         let ChannelBuilderFuture {
             local_addr,
@@ -279,7 +252,7 @@ where
             tcp_settings,
             limit,
             accept,
-            connecting: build_listener::<A, M, Filter>(
+            fut: build_tcp_channel::<A, T, E, M, Filter>(
                 local_addr,
                 limit,
                 accept,
@@ -292,40 +265,24 @@ where
     }
 }
 
-impl<
-        A,
-        T,
-        E,
-        RW,
-        Fut: Future<Output = AcceptResult<N, RW>>,
-        Filter: Fn(SocketAddr) -> bool,
-        const N: usize,
-    > Future for ChannelBuilderFuture<A, T, E, RW, Fut, Filter, N>
+impl<A, T, E, Filter, Fut, const N: usize, L> Future
+    for ChannelBuilderFuture<A, T, E, Filter, Fut, N, L>
+where
+    Filter: Fn(SocketAddr) -> bool,
+    Fut: Future<Output = Result<Channel<T, E, N, L>>>,
+    L: Accept,
 {
-    type Output = Result<Channel<T, E, N, RW>>;
+    type Output = Result<Channel<T, E, N, L>>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-
-        let build_result = ready!(this.connecting.poll(cx));
-
-        let (listener, stream_pool, local_addr) = match build_result {
-            Ok(ret) => ret,
-            Err(error) => return Poll::Ready(Err(error)),
-        };
-
-        Poll::Ready(Ok::<_, ChannelBuilderError>(Channel {
-            listener: listener.into(),
-            local_addr,
-            stream_pool,
-            tcp_stream_settings: this.tcp_settings.stream_settings,
-            _phantom: PhantomData,
-        }))
+        self.project().fut.poll(cx)
     }
 }
 
-async fn build_listener<
+async fn build_tcp_channel<
     A: 'static + Send + ToSocketAddrs,
+    T,
+    E,
     const N: usize,
     Filter: Fn(SocketAddr) -> bool,
 >(
@@ -334,7 +291,7 @@ async fn build_listener<
     accept: usize,
     tcp_settings: TcpSettings,
     filter: Filter,
-) -> AcceptResult<N> {
+) -> Result<Channel<T, E, N, TcpListener>> {
     let addr = tokio::task::spawn_blocking(move || {
         local_addr.to_socket_addrs()?.next().ok_or(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
@@ -414,15 +371,20 @@ async fn build_listener<
                 stream.set_ttl(ttl).context(SetTtlSnafu { addr })?;
             }
 
-            let (r, w) = stream.into_split();
-            pool.push_stream(TcpSplit::RW(r, w), addr)
+            pool.push_stream(stream, addr)
                 .expect("Element should be pushed til len");
 
             i += 1;
         }
     }
 
-    Ok((listener, pool, local_addr))
+    Ok(Channel {
+        listener,
+        local_addr,
+        stream_pool: pool,
+        stream_config: tcp_settings.stream_settings,
+        _phantom: PhantomData,
+    })
 }
 
 pub mod errors {

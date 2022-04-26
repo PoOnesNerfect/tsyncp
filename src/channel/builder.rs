@@ -1,21 +1,18 @@
 use super::Channel;
-use crate::util::{frame_codec::VariedLengthDelimitedCodec, split::TcpSplit, Framed};
+use crate::util::{frame_codec::VariedLengthDelimitedCodec, Framed};
 use errors::*;
-use futures::future::Ready;
-use futures::{ready, Future};
+use futures::Future;
 use pin_project::pin_project;
 use snafu::{Backtrace, ResultExt};
+use std::io;
 use std::marker::PhantomData;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::task::Poll;
 use std::time::Duration;
-use std::{fmt, io};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpSocket;
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::task::JoinError;
 
 pub type Result<T, E = ChannelBuilderError> = std::result::Result<T, E>;
-pub type BuildResult<RW> = Result<(RW, SocketAddr, SocketAddr)>;
 
 pub(crate) fn new<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     addr: A,
@@ -24,9 +21,8 @@ pub(crate) fn new<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    TcpSplit,
-    impl Future<Output = BuildResult<TcpSplit>>,
     impl Clone + Fn(SocketAddr) -> bool,
+    impl Future<Output = Result<Channel<T, E>>>,
 > {
     let max_retries = None;
     let retry_sleep_duration = Duration::from_millis(1000);
@@ -39,21 +35,21 @@ pub(crate) fn new<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
         max_retries,
         retry_sleep_duration,
         tcp_settings,
-        state: ChannelBuilderFutureState::Connecting(build_stream::<A, _>(
+        fut: build_tcp_stream::<A, T, E, _>(
             addr,
             listening,
             max_retries,
             retry_sleep_duration,
             tcp_settings,
             filter.clone(),
-        )),
+        ),
         filter,
         _phantom: PhantomData,
     }
 }
 
 #[pin_project]
-pub struct ChannelBuilderFuture<A, T, E, RW, Fut, Filter> {
+pub struct ChannelBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     addr: A,
     listening: bool,
     max_retries: Option<usize>,
@@ -61,8 +57,8 @@ pub struct ChannelBuilderFuture<A, T, E, RW, Fut, Filter> {
     tcp_settings: TcpSettings,
     filter: Filter,
     #[pin]
-    state: ChannelBuilderFutureState<RW, Fut>,
-    _phantom: PhantomData<(T, E)>,
+    fut: Fut,
+    _phantom: PhantomData<(T, E, S)>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -76,13 +72,7 @@ struct TcpSettings {
     ttl: Option<u32>,
 }
 
-#[pin_project(project = BuilderStateEnum)]
-enum ChannelBuilderFutureState<RW, Fut> {
-    Connecting(#[pin] Fut),
-    CustomStream(Option<(RW, SocketAddr, SocketAddr)>),
-}
-
-impl<A, T, E, RW, Fut, Filter> ChannelBuilderFuture<A, T, E, RW, Fut, Filter>
+impl<A, T, E, Filter, Fut> ChannelBuilderFuture<A, T, E, Filter, Fut>
 where
     A: 'static + Clone + Send + ToSocketAddrs,
     Filter: Clone + Fn(SocketAddr) -> bool,
@@ -91,8 +81,7 @@ where
         mut self,
         retry_sleep_duration: Duration,
         max_retries: usize,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = BuildResult<TcpSplit>>, Filter>
-    {
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.max_retries.replace(max_retries);
         self.retry_sleep_duration = retry_sleep_duration;
 
@@ -102,8 +91,7 @@ where
     pub fn filter<Filter2: Clone + Fn(SocketAddr) -> bool>(
         self,
         filter: Filter2,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = BuildResult<TcpSplit>>, Filter2>
-    {
+    ) -> ChannelBuilderFuture<A, T, E, Filter2, impl Future<Output = Result<Channel<T, E>>>> {
         let ChannelBuilderFuture {
             addr,
             listening,
@@ -118,14 +106,14 @@ where
             listening,
             max_retries,
             retry_sleep_duration,
-            state: ChannelBuilderFutureState::Connecting(build_stream::<A, Filter2>(
+            fut: build_tcp_stream::<A, T, E, Filter2>(
                 addr,
                 listening,
                 max_retries,
                 retry_sleep_duration,
                 tcp_settings.clone(),
                 filter.clone(),
-            )),
+            ),
             tcp_settings,
             filter,
             _phantom: PhantomData,
@@ -135,8 +123,7 @@ where
     pub fn set_tcp_reuseaddr(
         mut self,
         reuseaddr: bool,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = BuildResult<TcpSplit>>, Filter>
-    {
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.reuseaddr.replace(reuseaddr);
 
         self.refresh()
@@ -150,8 +137,7 @@ where
     pub fn set_tcp_reuseport(
         mut self,
         reuseport: bool,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = BuildResult<TcpSplit>>, Filter>
-    {
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.reuseport.replace(reuseport);
 
         self.refresh()
@@ -160,8 +146,7 @@ where
     pub fn set_tcp_linger(
         mut self,
         dur: Option<Duration>,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = BuildResult<TcpSplit>>, Filter>
-    {
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.linger.replace(dur);
 
         self.refresh()
@@ -170,8 +155,7 @@ where
     pub fn set_tcp_nodelay(
         mut self,
         nodelay: bool,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = BuildResult<TcpSplit>>, Filter>
-    {
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.nodelay.replace(nodelay);
 
         self.refresh()
@@ -180,8 +164,7 @@ where
     pub fn set_tcp_ttl(
         mut self,
         ttl: u32,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = BuildResult<TcpSplit>>, Filter>
-    {
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.ttl.replace(ttl);
 
         self.refresh()
@@ -190,8 +173,7 @@ where
     pub fn set_tcp_recv_buffer_size(
         mut self,
         size: u32,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = BuildResult<TcpSplit>>, Filter>
-    {
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.recv_buffer_size.replace(size);
 
         self.refresh()
@@ -200,8 +182,7 @@ where
     pub fn set_tcp_send_buffer_size(
         mut self,
         size: u32,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = BuildResult<TcpSplit>>, Filter>
-    {
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.send_buffer_size.replace(size);
 
         self.refresh()
@@ -209,8 +190,7 @@ where
 
     fn refresh(
         self,
-    ) -> ChannelBuilderFuture<A, T, E, TcpSplit, impl Future<Output = BuildResult<TcpSplit>>, Filter>
-    {
+    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         let ChannelBuilderFuture {
             addr,
             listening,
@@ -226,14 +206,14 @@ where
             listening,
             max_retries,
             retry_sleep_duration,
-            state: ChannelBuilderFutureState::Connecting(build_stream::<A, _>(
+            fut: build_tcp_stream::<A, T, E, Filter>(
                 addr,
                 listening,
                 max_retries,
                 retry_sleep_duration,
                 tcp_settings.clone(),
                 filter.clone(),
-            )),
+            ),
             tcp_settings,
             filter,
             _phantom: PhantomData,
@@ -241,88 +221,29 @@ where
     }
 }
 
-impl<A, T, E, RW, Fut, Filter> ChannelBuilderFuture<A, T, E, RW, Fut, Filter> {
-    pub fn with_codec<C>(self) -> ChannelBuilderFuture<A, T, C, RW, Fut, Filter> {
-        ChannelBuilderFuture {
-            addr: self.addr,
-            listening: self.listening,
-            max_retries: self.max_retries,
-            retry_sleep_duration: self.retry_sleep_duration,
-            tcp_settings: self.tcp_settings,
-            filter: self.filter,
-            state: self.state,
-            _phantom: PhantomData,
-        }
-    }
-
-    pub fn with_stream<S>(
-        self,
-        custom_stream: S,
-        local_addr: SocketAddr,
-        peer_addr: SocketAddr,
-    ) -> ChannelBuilderFuture<A, T, E, S, Ready<Result<S>>, Filter> {
-        ChannelBuilderFuture {
-            addr: self.addr,
-            listening: self.listening,
-            max_retries: self.max_retries,
-            retry_sleep_duration: self.retry_sleep_duration,
-            tcp_settings: self.tcp_settings,
-            filter: self.filter,
-            state: ChannelBuilderFutureState::CustomStream(Some((
-                custom_stream,
-                local_addr,
-                peer_addr,
-            ))),
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<
-        A,
-        T,
-        E,
-        RW: AsyncRead + AsyncWrite + std::fmt::Debug,
-        Fut: Future<Output = BuildResult<RW>>,
-        Filter,
-    > Future for ChannelBuilderFuture<A, T, E, RW, Fut, Filter>
-where
-    T: fmt::Debug,
+impl<A, T, E, Filter, Fut: Future<Output = Result<Channel<T, E, S>>>, S> Future
+    for ChannelBuilderFuture<A, T, E, Filter, Fut, S>
 {
-    type Output = Result<Channel<T, E, RW>>;
+    type Output = Result<Channel<T, E, S>>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
-        use BuilderStateEnum::*;
-        let this = self.project();
-        let (stream, local_addr, peer_addr) = match this.state.project() {
-            Connecting(building) => {
-                let build_result = ready!(building.poll(cx));
-
-                match build_result {
-                    Ok((stream, local_addr, peer_addr)) => (stream, local_addr, peer_addr),
-                    Err(error) => return Poll::Ready(Err(error)),
-                }
-            }
-            CustomStream(stream_info) => stream_info.take().expect("CustomStream should be set"),
-        };
-
-        Poll::Ready(Ok::<_, ChannelBuilderError>(Channel {
-            framed: Framed::new(stream, VariedLengthDelimitedCodec::new()),
-            local_addr,
-            peer_addr,
-            _phantom: PhantomData,
-        }))
+        self.project().fut.poll(cx)
     }
 }
 
-async fn build_stream<A: 'static + Send + ToSocketAddrs, Filter: Fn(SocketAddr) -> bool>(
+async fn build_tcp_stream<
+    A: 'static + Send + ToSocketAddrs,
+    T,
+    E,
+    Filter: Fn(SocketAddr) -> bool,
+>(
     addr: A,
     listening: bool,
     max_retries: Option<usize>,
     retry_sleep_duration: Duration,
     tcp_settings: TcpSettings,
     filter: Filter,
-) -> Result<(TcpSplit, SocketAddr, SocketAddr)> {
+) -> Result<Channel<T, E>> {
     let addr = tokio::task::spawn_blocking(move || {
         addr.to_socket_addrs()?.next().ok_or(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
@@ -391,9 +312,12 @@ async fn build_stream<A: 'static + Send + ToSocketAddrs, Filter: Fn(SocketAddr) 
         stream.set_ttl(ttl).context(SetTtlSnafu { addr })?;
     }
 
-    let (r, w) = stream.into_split();
-
-    Ok((TcpSplit::RW(r, w), local_addr, peer_addr))
+    Ok(Channel {
+        framed: Framed::new(stream, VariedLengthDelimitedCodec::new()),
+        local_addr,
+        peer_addr,
+        _phantom: PhantomData,
+    })
 }
 
 fn get_socket(addr: &SocketAddr, tcp_settings: &TcpSettings) -> Result<TcpSocket> {
