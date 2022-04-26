@@ -3,8 +3,9 @@ use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-pub use tokio::net::tcp::*;
 use tokio::net::{tcp, TcpStream};
+
+pub use tokio::net::tcp::ReuniteError;
 
 pub(crate) fn reunite(
     read: OwnedReadHalf,
