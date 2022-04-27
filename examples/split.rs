@@ -35,37 +35,40 @@ async fn main() {
 }
 
 async fn try_main() -> Result<()> {
-    let receiver_handle = tokio::spawn(async move {
-        let channel: multi_channel::ProtobufChannel<Dummy> = multi_channel::channel_on(ADDR)
+    let mc = tokio::spawn(async move {
+        let mc: multi_channel::ProtobufChannel<Dummy> = multi_channel::channel_on(ADDR)
             .limit(LEN)
             .accept_full()
             .await?;
 
-        let (rx, tx) = channel.split();
+        let (rx, tx) = mc.split();
         let mut rx: mpsc::ProtobufReceiver<Dummy> = rx;
         let mut tx: broadcast::ProtobufSender<Dummy> = tx;
 
+        // broadcast data concurrently
         let tx_handle = tokio::spawn(async move {
             let now = Instant::now();
             for i in 0..COUNT {
-                tx.send(Dummy {
+                let dummy = Dummy {
                     field1: "hello world".to_string(),
                     field2: 123213,
                     field3: i as u64,
-                })
-                .await?;
+                };
+
+                tx.send(dummy).await?;
             }
             let duration = Instant::now() - now;
-            info!("sending {} msgs took {:?}", COUNT, duration);
+            info!("broadcasting {} msgs took {:?}", COUNT, duration);
 
             Ok::<_, Report>(())
         });
 
+        // consume data concurrently
         let rx_handle = tokio::spawn(async move {
             let mut i = 0;
             let now = Instant::now();
             while let Some((item, _addr)) = rx.recv_with_addr().await {
-                let item = item?;
+                let _item = item?;
 
                 i += 1;
 
@@ -77,11 +80,7 @@ async fn try_main() -> Result<()> {
                 }
             }
             let duration = Instant::now() - now;
-            info!(
-                "receiver: receiving {} msgs took {:?}",
-                COUNT * LEN,
-                duration
-            );
+            info!("rx: receiving {} msgs took {:?}", COUNT * LEN, duration);
 
             Ok::<_, Report>(())
         });
@@ -125,12 +124,13 @@ async fn try_main() -> Result<()> {
                     let mut i = 0;
 
                     while i < COUNT {
-                        tx.send(Dummy {
+                        let dummy = Dummy {
                             field1: "hello world".to_string(),
                             field2: 123213,
                             field3: i as u64,
-                        })
-                        .await?;
+                        };
+
+                        tx.send(dummy).await?;
 
                         i += 1;
 
@@ -154,7 +154,7 @@ async fn try_main() -> Result<()> {
         })
         .collect::<Vec<_>>();
 
-    receiver_handle.await??;
+    mc.await??;
     try_join_all(handles)
         .await?
         .into_iter()

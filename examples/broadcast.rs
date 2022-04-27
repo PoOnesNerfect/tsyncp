@@ -35,23 +35,22 @@ async fn main() {
 }
 
 async fn try_main() -> Result<()> {
-    let receiver_handle = tokio::spawn(async move {
-        let mut receiever: broadcast::ProtobufSender<Dummy> =
+    let broadcast_handle = tokio::spawn(async move {
+        let mut tx: broadcast::ProtobufSender<Dummy> =
             broadcast::send_on(ADDR).limit(LEN).accept_full().await?;
-
-        // let (mut receiever, _sender) = receiever.split()?;
 
         let now = Instant::now();
         for i in 0..COUNT {
-            receiever
-                .broadcast(Dummy {
-                    field1: "hello world".to_string(),
-                    field2: 123213,
-                    field3: i as u64,
-                })
-                .await?;
+            let dummy = Dummy {
+                field1: "hello world".to_string(),
+                field2: 123213,
+                field3: i as u64,
+            };
+
+            tx.send(dummy).await?;
         }
         let duration = Instant::now() - now;
+
         info!("sending {} msgs took {:?}", COUNT, duration);
 
         Ok::<_, color_eyre::Report>(())
@@ -60,15 +59,14 @@ async fn try_main() -> Result<()> {
     let handles = (0..LEN)
         .map(|n| {
             tokio::spawn(async move {
-                let mut sender: broadcast::ProtobufReceiver<Dummy> = broadcast::recv_to(ADDR)
+                let mut rx: broadcast::ProtobufReceiver<Dummy> = broadcast::recv_to(ADDR)
                     .retry(Duration::from_millis(500), 100)
                     .await?;
-                info!("{n}: addr: {}", sender.local_addr());
 
                 let mut i = 0;
 
                 let now = Instant::now();
-                while let Some(Ok(_)) = sender.recv().await {
+                while let Some(Ok(_)) = rx.recv().await {
                     i += 1;
 
                     if i % (COUNT / 10) == 0 {
@@ -87,7 +85,7 @@ async fn try_main() -> Result<()> {
         })
         .collect::<Vec<_>>();
 
-    receiver_handle.await??;
+    broadcast_handle.await??;
     try_join_all(handles)
         .await?
         .into_iter()

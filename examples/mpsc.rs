@@ -35,10 +35,10 @@ async fn main() {
 }
 
 async fn try_main() -> Result<()> {
-    let sender_handles = (0..LEN)
+    let tx_handles = (0..LEN)
         .map(|_| {
             tokio::spawn(async move {
-                let mut sender: mpsc::JsonSender<Dummy> = mpsc::send_to(ADDR)
+                let mut tx: mpsc::JsonSender<Dummy> = mpsc::send_to(ADDR)
                     .retry(Duration::from_millis(500), 100)
                     .await?;
 
@@ -46,13 +46,13 @@ async fn try_main() -> Result<()> {
                 let mut i = 0;
 
                 while i < COUNT {
-                    sender
-                        .send(Dummy {
-                            field1: "hello world".to_string(),
-                            field2: 123213,
-                            field3: i as u64,
-                        })
-                        .await?;
+                    let dummy = Dummy {
+                        field1: "hello world".to_string(),
+                        field2: 123213,
+                        field3: i as u64,
+                    };
+
+                    tx.send(dummy).await?;
 
                     i += 1;
 
@@ -64,7 +64,7 @@ async fn try_main() -> Result<()> {
                     }
                 }
 
-                let port = sender.local_addr().port();
+                let port = tx.local_addr().port();
                 let duration = Instant::now() - now;
                 info!("{port}: sending {COUNT} msgs took {duration:?}");
 
@@ -73,19 +73,19 @@ async fn try_main() -> Result<()> {
         })
         .collect::<Vec<_>>();
 
-    let receiver_handle = tokio::spawn(async move {
-        let mut receiever: mpsc::JsonReceiver<Dummy> =
+    let rx_handle = tokio::spawn(async move {
+        let mut rx: mpsc::JsonReceiver<Dummy> =
             mpsc::recv_on(ADDR).limit(LEN).accept_full().await?;
 
         let mut map = std::collections::HashMap::new();
 
-        for addr in receiever.peer_addrs() {
+        for addr in rx.peer_addrs() {
             map.insert(addr.port(), 0);
         }
 
         let mut i = 0;
         let now = Instant::now();
-        while let Some((item, addr)) = receiever.recv_with_addr().await {
+        while let Some((item, addr)) = rx.recv_with_addr().await {
             let _item = item?;
 
             *map.get_mut(&addr.port()).unwrap() += 1;
@@ -113,11 +113,11 @@ async fn try_main() -> Result<()> {
         Ok::<_, color_eyre::Report>(())
     });
 
-    try_join_all(sender_handles)
+    try_join_all(tx_handles)
         .await?
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
-    receiver_handle.await??;
+    rx_handle.await??;
 
     Ok(())
 }
