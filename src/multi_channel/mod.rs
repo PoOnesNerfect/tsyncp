@@ -3,8 +3,8 @@ use crate::util::stream_pool::{
     errors::{StreamPoolError, StreamPoolPollError, StreamPoolSinkError},
     StreamPool,
 };
-use crate::util::{Accept, ListenerWrapper, Split};
-use crate::util::{ReadListener, WriteListener};
+use crate::util::{Accept, ListenerWrapper, ReadListener, Split, WriteListener};
+use crate::{broadcast, mpsc};
 use bytes::BytesMut;
 use errors::*;
 use futures::future::poll_fn;
@@ -88,8 +88,8 @@ where
     pub fn split(
         self,
     ) -> (
-        Channel<T, E, N, ReadListener<L>>,
-        Channel<T, E, N, WriteListener<L>>,
+        mpsc::Receiver<T, E, N, ReadListener<L>>,
+        broadcast::Sender<T, E, N, WriteListener<L>>,
     ) {
         Split::split(self)
     }
@@ -102,8 +102,8 @@ where
     <L::Output as Split>::Left: fmt::Debug,
     <L::Output as Split>::Right: fmt::Debug,
 {
-    type Left = Channel<T, E, N, ReadListener<L>>;
-    type Right = Channel<T, E, N, WriteListener<L>>;
+    type Left = mpsc::Receiver<T, E, N, ReadListener<L>>;
+    type Right = broadcast::Sender<T, E, N, WriteListener<L>>;
     type Error = ChannelUnsplitError<<L::Output as Split>::Error>;
 
     fn split(self) -> (Self::Left, Self::Right) {
@@ -135,7 +135,7 @@ where
             _phantom: PhantomData,
         };
 
-        (receiver, sender)
+        (receiver.into(), sender.into())
     }
 
     fn unsplit(left: Self::Left, right: Self::Right) -> Result<Self, Self::Error> {
@@ -145,7 +145,7 @@ where
             stream_pool: l_stream_pool,
             stream_config: l_stream_config,
             ..
-        } = left;
+        } = left.into();
 
         let Channel {
             listener: r_listener,
@@ -153,7 +153,7 @@ where
             stream_pool: r_stream_pool,
             stream_config: r_stream_config,
             ..
-        } = right;
+        } = right.into();
 
         ensure!(
             l_local_addr == r_local_addr,

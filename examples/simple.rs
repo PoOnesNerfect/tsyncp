@@ -5,7 +5,7 @@ use log::{error, info};
 use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
-use tsyncp::{channel, multi_channel};
+use tsyncp::{broadcast, channel, mpsc, multi_channel};
 
 const COUNT: usize = 1000_000;
 const LEN: usize = 10;
@@ -41,7 +41,9 @@ async fn try_main() -> Result<()> {
             .accept_full()
             .await?;
 
-        let (mut rx, mut tx) = channel.split();
+        let (rx, tx) = channel.split();
+        let mut rx: mpsc::ProtobufReceiver<Dummy> = rx;
+        let mut tx: broadcast::ProtobufSender<Dummy> = tx;
 
         let tx_handle = tokio::spawn(async move {
             let now = Instant::now();

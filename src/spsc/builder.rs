@@ -220,7 +220,7 @@ where
             Err(error) => return Poll::Ready(Err(error)),
         };
 
-        Poll::Ready(Ok(Sender(channel.split().1)))
+        Poll::Ready(Ok(Sender(channel.split().1.into())))
     }
 }
 
@@ -377,7 +377,7 @@ where
             Err(error) => return Poll::Ready(Err(error)),
         };
 
-        Poll::Ready(Ok(Sender(channel.split().1)))
+        Poll::Ready(Ok(Sender(channel.split().1.into())))
     }
 }
 
@@ -535,7 +535,7 @@ where
             Err(error) => return Poll::Ready(Err(error)),
         };
 
-        Poll::Ready(Ok(Receiver(channel.split().0)))
+        Poll::Ready(Ok(Receiver(channel.split().0.into())))
     }
 }
 
@@ -692,7 +692,7 @@ where
             Err(error) => return Poll::Ready(Err(error)),
         };
 
-        Poll::Ready(Ok(Receiver(channel.split().0)))
+        Poll::Ready(Ok(Receiver(channel.split().0.into())))
     }
 }
 

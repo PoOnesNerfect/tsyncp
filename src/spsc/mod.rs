@@ -91,6 +91,12 @@ impl<T, E, S> From<channel::Channel<T, E, S>> for Sender<T, E, S> {
     }
 }
 
+impl<T, E, S> From<Sender<T, E, S>> for channel::Channel<T, E, S> {
+    fn from(channel: Sender<T, E, S>) -> Self {
+        channel.0
+    }
+}
+
 impl<T, E, S> Sender<T, E, S> {
     pub fn local_addr(&self) -> &SocketAddr {
         &self.0.local_addr()
@@ -163,6 +169,12 @@ pub struct Receiver<T, E, S = tcp::OwnedReadHalf>(#[pin] channel::Channel<T, E, 
 impl<T, E, S> From<channel::Channel<T, E, S>> for Receiver<T, E, S> {
     fn from(channel: channel::Channel<T, E, S>) -> Self {
         Receiver(channel)
+    }
+}
+
+impl<T, E, S> From<Receiver<T, E, S>> for channel::Channel<T, E, S> {
+    fn from(channel: Receiver<T, E, S>) -> Self {
+        channel.0
     }
 }
 

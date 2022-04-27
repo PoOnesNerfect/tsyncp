@@ -1,5 +1,6 @@
 use crate::util::codec::{DecodeMethod, EncodeMethod};
 use crate::util::{Framed, Split};
+use crate::{broadcast, mpsc};
 use errors::*;
 use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
 use snafu::{ensure, Backtrace, ResultExt};
@@ -68,7 +69,12 @@ impl<T, E, S> Channel<T, E, S>
 where
     S: Split,
 {
-    pub fn split(self) -> (Channel<T, E, S::Left>, Channel<T, E, S::Right>) {
+    pub fn split(
+        self,
+    ) -> (
+        broadcast::Receiver<T, E, S::Left>,
+        mpsc::Sender<T, E, S::Right>,
+    ) {
         Split::split(self)
     }
 }
@@ -77,8 +83,8 @@ impl<T, E, S> Split for Channel<T, E, S>
 where
     S: Split,
 {
-    type Left = Channel<T, E, S::Left>;
-    type Right = Channel<T, E, S::Right>;
+    type Left = broadcast::Receiver<T, E, S::Left>;
+    type Right = mpsc::Sender<T, E, S::Right>;
     type Error = ChannelUnsplitError<<S as Split>::Error>;
 
     fn split(self) -> (Self::Left, Self::Right) {
@@ -105,7 +111,7 @@ where
             _phantom: PhantomData,
         };
 
-        (r, w)
+        (r.into(), w.into())
     }
 
     fn unsplit(left: Self::Left, right: Self::Right) -> Result<Self, Self::Error> {
@@ -114,14 +120,14 @@ where
             local_addr: l_local_addr,
             peer_addr: l_peer_addr,
             ..
-        } = left;
+        } = left.into();
 
         let Channel {
             framed: r_framed,
             local_addr: r_local_addr,
             peer_addr: r_peer_addr,
             ..
-        } = right;
+        } = right.into();
 
         ensure!(
             l_local_addr == r_local_addr,

@@ -174,7 +174,7 @@ where
             Err(error) => return Poll::Ready(Err(error)),
         };
 
-        Poll::Ready(Ok::<_, WaiterBuilderError>(Waiter(channel.split().0)))
+        Poll::Ready(Ok(Waiter(channel.split().0.into())))
     }
 }
 
@@ -406,7 +406,7 @@ where
             Err(error) => return Poll::Ready(Err(error)),
         };
 
-        Poll::Ready(Ok::<_, BarrierBuilderError>(Barrier(channel.split().1)))
+        Poll::Ready(Ok(Barrier(channel.split().1.into())))
     }
 }
 

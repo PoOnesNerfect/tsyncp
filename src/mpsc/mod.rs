@@ -73,6 +73,12 @@ impl<T, E, S> From<channel::Channel<T, E, S>> for Sender<T, E, S> {
     }
 }
 
+impl<T, E, S> From<Sender<T, E, S>> for channel::Channel<T, E, S> {
+    fn from(c: Sender<T, E, S>) -> Self {
+        c.0
+    }
+}
+
 impl<T, E, S> Sender<T, E, S> {
     pub fn local_addr(&self) -> &SocketAddr {
         &self.0.local_addr()
@@ -143,6 +149,24 @@ where
 pub struct Receiver<T, E, const N: usize = 0, L: Accept = ReadListener<TcpListener>>(
     #[pin] multi_channel::Channel<T, E, N, L>,
 );
+
+impl<T, E, const N: usize, L> From<multi_channel::Channel<T, E, N, L>> for Receiver<T, E, N, L>
+where
+    L: Accept,
+{
+    fn from(c: multi_channel::Channel<T, E, N, L>) -> Self {
+        Self(c)
+    }
+}
+
+impl<T, E, const N: usize, L> From<Receiver<T, E, N, L>> for multi_channel::Channel<T, E, N, L>
+where
+    L: Accept,
+{
+    fn from(c: Receiver<T, E, N, L>) -> Self {
+        c.0
+    }
+}
 
 impl<T, E, const N: usize, L> Receiver<T, E, N, L>
 where

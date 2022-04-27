@@ -65,6 +65,18 @@ pub fn recv_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
 #[pin_project::pin_project]
 pub struct Receiver<T, E, S = tcp::OwnedReadHalf>(#[pin] channel::Channel<T, E, S>);
 
+impl<T, E, S> From<channel::Channel<T, E, S>> for Receiver<T, E, S> {
+    fn from(c: channel::Channel<T, E, S>) -> Self {
+        Self(c)
+    }
+}
+
+impl<T, E, S> From<Receiver<T, E, S>> for channel::Channel<T, E, S> {
+    fn from(c: Receiver<T, E, S>) -> Self {
+        c.0
+    }
+}
+
 impl<T, E, S> Receiver<T, E, S> {
     pub fn local_addr(&self) -> &SocketAddr {
         &self.0.local_addr()
@@ -105,6 +117,24 @@ where
 pub struct Sender<T, E, const N: usize = 0, L: Accept = WriteListener<TcpListener>>(
     #[pin] multi_channel::Channel<T, E, N, L>,
 );
+
+impl<T, E, const N: usize, L> From<multi_channel::Channel<T, E, N, L>> for Sender<T, E, N, L>
+where
+    L: Accept,
+{
+    fn from(c: multi_channel::Channel<T, E, N, L>) -> Self {
+        Self(c)
+    }
+}
+
+impl<T, E, const N: usize, L> From<Sender<T, E, N, L>> for multi_channel::Channel<T, E, N, L>
+where
+    L: Accept,
+{
+    fn from(c: Sender<T, E, N, L>) -> Self {
+        c.0
+    }
+}
 
 impl<T, E, const N: usize, L> Sender<T, E, N, L>
 where
