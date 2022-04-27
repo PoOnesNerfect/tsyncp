@@ -9,51 +9,40 @@
 //! Synchronization primitives over TCP for message passing between services.
 //!
 //! ## Provided APIs
-//! Currently, **tsyncp** provides 4 types of channels:
-//! * [mpsc]: Multi-producer/single-consumer channel. A consumer can initialize a [Receiver](mpsc::Receiver) by
-//! calling [mpsc::recv_on] and passing local address to bind to. Producers can create a [Sender](mpsc::Sender) by
-//! calling [mpsc::send_to] and passing the receiver's address to connect to.
-//! * [broadcast]: Sigle-producer/multi-consumer channel. A producer can initialize a [Sender](broadcast::Sender) by
-//! calling [broadcast::send_on] and passing local address to bind to. Consumers can create a [Receiver](broadcast::Receiver) by
-//! calling [broadcast::recv_to] and passing the receiver's address to connect to.
-//! * [barrier]: Ensures multiples [Waiter]s connected to a [Barrier] will wait until [Barrier::release](barrier::Barrier::release) is called.
-//! A [Barrier](barrier::Barrier) can be initialized by calling [barrier::block_on] and passing
-//! local address to bind to. [Waiter]s can be initialized by calling [barrier::wait_to] and
-//! passing the barrier's address.
-//! * [spsc]: Single-producer/single-consumer channel. A consumer can be initialized either by listening on local address with [spsc::recv_on], or connecting to a sender with [spsc::recv_to]. A producer can be initialized either by listening on a local address with [spsc::send_on], or connecting to a receiver [spsc::send_to].
+//! Currently, **tsyncp** provides 6 types of channels:
+//! * [mpsc]: Multi-producer/single-consumer channel.
+//! * [broadcast]: Sigle-producer/multi-consumer channel.
+//! * [barrier]: Ensures multiple waiters [wait] for the barrier to [release].
+//! * [spsc]: Single-producer/single-consumer channel.
+//! * [channel]: Generic single-connection channel for sending/receiving data.
+//! Can [split](channel::Channel::split) into `Sender` and `Receiver` pair.
+//! * [multi_channel]: Generic multi-connection channel for sending/receiving data.
+//! Can [split](multi_channel::Channel::split) into `Sender` and `Receiver` pair.
 //!
-//! **Note:** If a method ends with `_on` (i.e. `send_on`), it means it's bound and listening on
-//! the address parameter; if a method ends with `_to` (i.e. `send_to`), it means that it's connecting to
-//! the address parameter.
-//!
-//! Each module (except for barrier) has a `Sender<T>` type and a `Receiver<T>` type. `Sender` will have
-//! async methods such as `send(&mut self, item: T)` for sending data, and `Receiver` will have an async method
-//! `recv(&mut self) -> Option<Result<T>>` for receiving data. `barrier` module has a `Waiter` type which
-//! can call `wait(&mut self)` to wait for the `Barrier`, and a `Barrier` type that can call `release(&mut self)`
-//! to release the waiters.
+//! **Note:** If an init method ends with `_on` (i.e. [broadcast::send_on]), it's listening on a local address;
+//! if an init method ends with `_to` (i.e. [mpsc::send_to]), it's connecting to a remote address.
 //!
 //! See [examples] to see how they can be used in practice.
 //!
-//! [Waiter]: crate::barrier::Waiter
-//! [Barrier]: crate::barrier::Barrier
+//! [release]: crate::barrier::Barrier::release
+//! [wait]: crate::barrier::Waiter::wait
 //! [examples]: https://github.com/PoOnesNerfect/tsyncp/tree/main/examples
 //!
 //!
-//! # Getting Started
+//! # Guide
 //!
-//! ## Dependency and Features
+//! ## Contents
+//! * [Features](#features)
+//! * [Initializing Receiver](#initializing-receiver)
+//! * [Initializing Sender](#initializing-sender)
+//! * [Send and Receive Data Concurrently with Channel/MultiChannel](#send-and-receive-data-concurrently-with-channelmultichannel)
 //!
-//! Easiest way to use **tsyncp** is to just including it in your `Cargo.toml` file:
-//!
-//! ```toml
-//! tsyncp = { version = "0.1" }
-//! ```
+//! ## Features
 //!
 //! By default, a few features (`json`, `protobuf`, `bincode`) are enabled for uses in
 //! encoding/decoding data. (WIP - only json and protobuf are supported so far)
 //!
-//! However, if you would like to use other encoding schemes like `rkyv`,
-//! you can disable default-features and include it instead:
+//! If you would like to use other encoding schemes like `rkyv`, include it like this:
 //!
 //! ```toml
 //! tsyncp = { version = "0.1", default-features = false, features = ["rkyv"] }
@@ -78,20 +67,11 @@
 //!
 //! ## Initializing Channels
 //!
-//! We will go through some examples of initializing mpsc's Sender and Receiver and
-//! try out a few handy tricks along the way.
+//! We'll use [mpsc] for our examples, since it's a widely known pattern.
 //!
-//! ### Basic Example
+//! #### Initializing Receiver
 //!
-//! This example shows the simpliest way to initialize [mpsc]'s [Sender] and [Receiver].
-//!
-//! [color-eyre] is used for error handling in the example.
-//!
-//! [Sender]: crate::mpsc::Sender
-//! [Receiver]: crate::mpsc::Receiver
-//! [color-eyre]: https://docs.rs/color-eyre/latest/color_eyre/
-//!
-//! ##### Receiver Side:
+//! You can initialize the receiver with [mpsc::recv_on(_).await](mpsc::recv_on)
 //!
 //! ```no_run
 //! use color_eyre::Result;
@@ -107,18 +87,15 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
-//!     // This will create a mpsc::Receiver that can accept connections on `localhost:8000`
-//!     // and receive json data.
-//!     // `JsonReceiver<Dummy>` is a type alias for `Recevier<Dummy, JsonCodec>`.
-//!     // `recv_on(..)` can take any parameter type that implements `ToSocketAddrs`.
-//!     let mut receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:8000").await?;
+//!     let mut receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").await?;
 //!
-//!     // You have to accept a connection to receive items!
-//!     // Calling `recv()` without accepting any connection will immediately return `None`.
+//!     // accept a new connection coming from a sender application.
 //!     receiver.accept().await?;
 //!
-//!     if let Some(item) = receiver.recv().await {
-//!         let item = item?;
+//!     // after accepting connection, you can start receiving data from it.
+//!     if let Some(Ok(item)) = receiver.recv().await {
+//!         // below is to show the type of received item.
+//!         let item: Dummy = item;
 //!
 //!         println!("received item: {item:?}");
 //!     }
@@ -127,148 +104,338 @@
 //! }
 //! ```
 //!
-//! ##### Sender Side:
+//! This will create a [mpsc::Receiver] that can accept connections on `"localhost:11114"`
+//! and receive json data.
+//!
+//! `recv_on(_)` can take any parameter that implements [ToSocketAddrs](std::net::ToSocketAddrs). (i.e. `([127, 0, 0, 1], 11114)` or `"127.0.0.1:11114"`)
+//!
+//! [JsonReceiver](mpsc::JsonReceiver) is a type alias for `Recevier<T, JsonCodec>`.
+//!
+//! You can use other codecs by replacing the type specifier like `ProtobufReceiver<T>`,
+//! or like `Receiver<T, ProtobufCodec>`. Other codecs are available at [util::codec].
+//! Make sure that sender and receiver are using the same codec to encode/decode data.
+//!
+//! After initialization, you have to accept new connections to receive items. By default, it does not
+//! have any connections and will return `None` when you call `recv()` on it.
+//!
+//!
+//! #### Configuring the Builder Future
+//!
+//! You can append configuration methods to the `recv_on(_)` like `recv_on(_).accept(n)`.
 //!
 //! ```no_run
-//! use color_eyre::Result;
+//! # use color_eyre::{Result, Report};
 //! use serde::{Serialize, Deserialize};
 //! use tsyncp::mpsc;
 //!
-//! #[derive(Debug, Clone, Serialize, Deserialize)]
-//! struct Dummy {
-//!     field1: String,
-//!     field2: u64,
-//!     field3: Vec<u8>,
+//! # #[derive(Debug, Clone, Serialize, Deserialize)]
+//! # struct Dummy {
+//! #     field1: String,
+//! #    field2: u64,
+//! #    field3: Vec<u8>,
+//! # }
+//! # #[tokio::main]
+//! # async fn main() -> Result<()> {
+//! let mut receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").accept(5).await?;
+//!
+//! while let Some(Ok(item)) = receiver.recv().await {
+//!     println!("received item: {item:?}");
 //! }
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<()> {
-//!     // Connect to the receiver listening on `localhost:8000` with `send_to` function.
-//!     // `JsonSender<Dummy>` is a type alias for `Sender<Dummy, JsonCodec>`.
-//!     // If the receiver is not initialized and accepting connections, it will return
-//!     // `ConnectionRefused`.
-//!     let mut sender: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:8000").await?;
-//!
-//!     let dummy = Dummy {
-//!         field1: String::from("hello world"),
-//!         field2: 1234567,
-//!         field3: vec![1, 2, 3, 4]
-//!     };
-//!
-//!     sender.send(dummy).await?;
-//!
-//!     Ok(())
-//! }
+//! # Ok(())
+//! # }
 //! ```
 //!
-//! That wasn't so hard!
+//! In the above example, it will initially accept 5 connections before returning the receiver.
+//! This is useful if you want to wait for connections before doing anything with it.
 //!
-//! However, there are couple things that could make it annoying to use:
-//! * For the receiver, after initializing, you have to call `receiver.accept().await?` in a separate line to accept a connection,
-//! which can be annoying, especially if you want to accept multiple connections before receiving data.
-//! * For the sender, before running application, you have to make sure receiver application is running and accepting connections,
-//! or else sender application will return `ConnectionRefused` error.
-//!
-//! We can solve these issues easily, as shown in the below example.
-//!
-//! ### Example: Appending `.accept()` and `.retry()` to builder futures.
-//!
-//! ##### Receiver Side:
+//! You can append as many configurations as you want before calling `.await` on it.
 //!
 //! ```no_run
-//! use color_eyre::Result;
+//! # use color_eyre::{Result, Report};
 //! use serde::{Serialize, Deserialize};
 //! use tsyncp::mpsc;
 //!
-//! #[derive(Debug, Clone, Serialize, Deserialize)]
-//! struct Dummy {
-//!     field1: String,
-//!     field2: u64,
-//!     field3: Vec<u8>,
+//! # #[derive(Debug, Clone, Serialize, Deserialize)]
+//! # struct Dummy {
+//! #     field1: String,
+//! #    field2: u64,
+//! #    field3: Vec<u8>,
+//! # }
+//! # #[tokio::main]
+//! # async fn main() -> Result<()> {
+//! let mut receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114")
+//!     .limit(10)
+//!     .accept_full()
+//!     .set_tcp_reuseaddr(true)
+//!     .set_tcp_nodelay(true)
+//!     .await?;
+//!
+//! while let Some(Ok(item)) = receiver.recv().await {
+//!     println!("received item: {item:?}");
 //! }
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<()> {
-//!     // This will create a `mpsc::Receiver` and accept `1` connection on `localhost:8000` before returning the
-//!     // receiver. This way, there's no need to write a separate line(s) to accept connections, though you
-//!     // still can.
-//!     let mut receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:8000").accept(1).await?;
-//!
-//!     // no need for separate accepting anymore.
-//!     // receiver.accept().await?;
-//!
-//!     if let Some(item) = receiver.recv().await {
-//!         let item = item?;
-//!
-//!         println!("received item: {item:?}");
-//!     }
-//!
-//!     Ok(())
-//! }
+//! # Ok(())
+//! # }
 //! ```
 //!
-//! ##### Sender Side:
+//! Above example will set the total limit of connections to 10, and wait until it
+//! accepts connections up to the limit.
+//!
+//! Also, it will set tcp settings for `reuseaddr` and `nodelay`.
+//!
+//! You can see all available configurations in [ReceiverBuilderFuture](mpsc::builder::ReceiverBuilderFuture).
+//!
+//!
+//! #### Initializing Sender
+//!
+//! You can initialize [mpsc::Sender] by calling [mpsc::send_to].
 //!
 //! ```no_run
-//! use color_eyre::Result;
-//! use serde::{Serialize, Deserialize};
-//! use std::time::Duration;
-//! use tsyncp::mpsc;
+//! # use color_eyre::{Result, Report};
+//! # use serde::{Serialize, Deserialize};
+//! # use tsyncp::mpsc;
+//! # #[derive(Debug, Clone, Serialize, Deserialize)]
+//! # struct Dummy {
+//! #     field1: String,
+//! #     field2: u64,
+//! #     field3: Vec<u8>,
+//! # }
+//! # #[tokio::main]
+//! # async fn main() -> Result<()> {
+//! # tokio::spawn(async move {
+//! # let receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").accept(1).await?;
+//! # Ok::<_, Report>(())
+//! # });
+//! # tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+//! let mut sender: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:11114").await?;
 //!
-//! #[derive(Debug, Clone, Serialize, Deserialize)]
-//! struct Dummy {
-//!     field1: String,
-//!     field2: u64,
-//!     field3: Vec<u8>,
-//! }
+//! let dummy = Dummy {
+//!     field1: String::from("hello world"),
+//!     field2: 1234567,
+//!     field3: vec![1, 2, 3, 4]
+//! };
 //!
-//! #[tokio::main]
-//! async fn main() -> Result<()> {
-//!     let retry_interval = Duration::from_millis(500);
-//!     let max_retries = 100;
+//! sender.send(dummy).await?;
 //!
-//!     // This will create a `mpsc::Sender` and retry initializing a connection to `localhost:8000`
-//!     // 100 times with interval of 500 ms. No more `ConnectionRefused`!
-//!     let mut sender: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:8000")
-//!         .retry(retry_interval, max_retries)
-//!         .await?;
-//!
-//!     let dummy = Dummy {
-//!         field1: String::from("hello world"),
-//!         field2: 1234567,
-//!         field3: vec![1, 2, 3, 4]
-//!     };
-//!
-//!     sender.send(dummy).await?;
-//!
-//!     Ok(())
-//! }
+//! # Ok(())
+//! # }
 //! ```
 //!
-//! That was also not hard at all!
+//! This will create an outgoing connection to `"localhost:11114"`.
 //!
-//! But how does it work?
+//! However, if the receiver is not yet initialized and accepting connections on this address, it will return
+//! an error `ConnectionRefused`.
 //!
-//! Functions like [mpsc::recv_on] and [mpsc::send_to] actually return
-//! [ReceiverBuilderFuture](mpsc::builder::ReceiverBuilderFuture)
-//! and [SenderBuilderFuture](mpsc::builder::SenderBuilderFuture).
-//! Quite a mouthful I know, but, what it means is that, the returned future is also a
-//! builder to set configurations before `await`ing it.
+//! You can append configurations to the init method to retry connections instead of failing.
 //!
-//! For `SenderBuilderFuture`, you can append a configuration like [retry](mpsc::builder::SenderBuilderFuture::retry) as well as any TCP
-//! configs like [reuseaddr](mpsc::builder::SenderBuilderFuture::set_tcp_reuseaddr),
-//! [linger](mpsc::builder::SenderBuilderFuture::set_tcp_linger) and [nodelay](mpsc::builder::SenderBuilderFuture::set_tcp_nodelay), etc.
+//! ```no_run
+//! # use color_eyre::{Result, Report};
+//! # use serde::{Serialize, Deserialize};
+//! # use tsyncp::mpsc;
+//! # #[derive(Debug, Clone, Serialize, Deserialize)]
+//! # struct Dummy {
+//! #     field1: String,
+//! #     field2: u64,
+//! #     field3: Vec<u8>,
+//! # }
+//! # #[tokio::main]
+//! # async fn main() -> Result<()> {
+//! # tokio::spawn(async move {
+//! # let receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").accept(1).await?;
+//! # Ok::<_, Report>(())
+//! # });
+//! let retry_interval = std::time::Duration::from_millis(500);
+//! let max_retries = 100;
 //!
-//! For `ReceiverBuilderFuture`, you can append configurations like
-//! [accept(n: usize)](mpsc::builder::ReceiverBuilderFuture::accept),
-//! [accept_filtered(Fn(SocketAddr) -> bool)](mpsc::builder::ReceiverBuilderFuture::accept_filtered),
-//! [limit(n: usize)](mpsc::builder::ReceiverBuilderFuture::limit), etc.,
-//! as well as all the TCP configs mentioned above.
+//! let mut sender: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:11114")
+//!     .retry(retry_interval, max_retries)
+//!     .await?;
 //!
-//! See [ReceiverBuilderFuture](mpsc::builder::ReceiverBuilderFuture) and
-//! [SenderBuilderFuture](mpsc::builder::SenderBuilderFuture) for all configuration options.
+//! let dummy = Dummy {
+//!     field1: String::from("hello world"),
+//!     field2: 1234567,
+//!     field3: vec![1, 2, 3, 4]
+//! };
 //!
-//! WIP. More documentations and examples to come!
+//! sender.send(dummy).await?;
+//!
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! This will retry connecting to `"localhost:11114"` 100 times with interval of 500 ms.
+//! No more `ConnectionRefused`!
+//!
+//! You can see all available configurations in [SenderBuilderFuture](mpsc::builder::SenderBuilderFuture).
+//!
+//! Initializing other primitives are pretty similar. You can see how they work by going through
+//! each module's documentation in the [modules](#modules) section.
+//!
+//! ### Send and Receive Data Concurrently with Channel/MultiChannel
+//!
+//! [channel] and [multi_channel] are the underlying primitives for all other primitives.
+//!
+//! In fact, all other primitives are just a thin wrapper around [channel::Channel] and [multi_channel::Channel].
+//!
+//! ##### mpsc::Sender
+//! ```ignore
+//! pub struct Sender(crate::channel::Channel);
+//! ```
+//!
+//! ##### mpsc::Receiver
+//! ```ignore
+//! pub struct Receiver(crate::multi_channel::Channel);
+//! ```
+//!
+//! The wrappers are created to isolate their functionalities to just sending or just receiving
+//! data.
+//!
+//! However, at some point, you might want to send and receive using the same TCP connection.
+//! In these cases, you can use [channel] and [multi_channel].
+//!
+//! [channel::Channel] can be used for a single connection, and [multi_channel::Channel] can be
+//! used for multiple connections in a connection pool, and listen to new connections.
+//!
+//! We'll go over how to initialize these two primitives below.
+//!
+//! For [channel::Channel], you can create a new channel using either [channel::channel_on] or [channel::channel_to].
+//!
+//! ```no_run
+//! # use color_eyre::{Result, Report};
+//! # use serde::{Serialize, Deserialize};
+//! # use std::time::Duration;
+//! use tsyncp::channel;
+//!
+//! # #[derive(Debug, Clone, Serialize, Deserialize)]
+//! # struct Dummy {
+//! #     field1: String,
+//! #     field2: u64,
+//! #     field3: Vec<u8>,
+//! # }
+//! # #[tokio::main]
+//! # async fn main() -> Result<()> {
+//! // Creating listening channel with `channel_on`.
+//! // By default, a channel waits to accept a connection before returning.
+//! let mut channel1: channel::JsonChannel<Dummy> = channel::channel_on("localhost:11114").await?;
+//!
+//! // you can start receiving data right away.
+//! if let Some(Ok(item)) = channel1.recv().await {
+//!     println!("received item: {item:?}");
+//!
+//!     // you can also send data using the same channel.
+//!     channel1.send(item).await?;
+//! }
+//!
+//!
+//! // Separate service connecting to above channel with `channel_to`.
+//! let retry_interval = Duration::from_millis(500);
+//! let max_retries = 100;
+//!
+//! let mut channel2: channel::JsonChannel<Dummy> = channel::channel_to("localhost:11114")
+//!     .retry(retry_interval, max_retries)
+//!     .await?;
+//!
+//! let dummy = Dummy {
+//!     field1: String::from("hello world"),
+//!     field2: 1234567,
+//!     field3: vec![1, 2, 3, 4]
+//! };
+//!
+//! channel2.send(dummy).await?;
+//! if let Some(Ok(item)) = channel2.recv().await {
+//!     println!("received item: {item:?}");
+//! }
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! By default, [channel_on](channel::channel_on) waits until it accepts a single channel before
+//! returning; is this behavior weird? Contact me at jack.y.l.dev@gmail.com if you want to change it, but I
+//! think it makes sense since it's just waiting for a single connection.
+//!
+//! Anyways, [channel::Channel] can send and receive data to/from a single connection.
+//!
+//! All good so far, but what if you wanted to send and receive data concurrently? Then you can use [channel::Channel::split]!
+//!
+//! ```no_run
+//! # use color_eyre::{Result, Report};
+//! # use serde::{Serialize, Deserialize};
+//! # use std::time::Duration;
+//! use tsyncp::{broadcast, channel, mpsc};
+//!
+//! # #[derive(Debug, Clone, Serialize, Deserialize)]
+//! # struct Dummy {
+//! #     field1: String,
+//! #     field2: u64,
+//! #     field3: Vec<u8>,
+//! # }
+//! # #[tokio::main]
+//! # async fn main() -> Result<()> {
+//! // Creating listening channel with `channel_on`.
+//! // By default, a channel waits to accept a connection before returning.
+//! let channel: channel::JsonChannel<Dummy> = channel::channel_on("localhost:11114").await?;
+//!
+//! // split channel into (rx, tx) pair.
+//! let (rx, tx) = channel.split();
+//!
+//! // Below code is just to show what type `split` returns.
+//! let rx: broadcast::JsonReceiver<Dummy> = rx;
+//! let tx: mpsc::JsonSender<Dummy> = tx;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! As you can see, `split()` returns a pair of receiver and a sender.
+//!
+//! [Receiver](broadcast::Receiver) is from [broadcast], which is a single connection receiver,
+//! and [Sender](mpsc::Sender) is from [mpsc], which is a single connection sender.
+//!
+//! Now, you can move `rx` and `tx` into separate threads or tasks, and send and receive data
+//! concurrently.
+//!
+//! For [multi_channel::Channel], it's pretty similar.
+//!
+//! ```no_run
+//! # use color_eyre::{Result, Report};
+//! # use serde::{Serialize, Deserialize};
+//! # use std::time::Duration;
+//! use tsyncp::{broadcast, mpsc, multi_channel};
+//!
+//! # #[derive(Debug, Clone, Serialize, Deserialize)]
+//! # struct Dummy {
+//! #     field1: String,
+//! #     field2: u64,
+//! #     field3: Vec<u8>,
+//! # }
+//! # #[tokio::main]
+//! # async fn main() -> Result<()> {
+//! // Creating multi_channel with `channel_on`.
+//! // Configure to set limit to 10 connections and wait til all 10 connections are accepted.
+//! let channel: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+//!     .limit(10)
+//!     .accept_full()
+//!     .await?;
+//!
+//! // split channel into (rx, tx) pair.
+//! let (rx, tx) = channel.split();
+//!
+//! // Below code is just to show what type `split` returns.
+//! let rx: mpsc::JsonReceiver<Dummy> = rx;
+//! let tx: broadcast::JsonSender<Dummy> = tx;
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! Currently, [multi_channel] can only be initialized using [multi_channel::channel_on], but I
+//! might add a config in the future such as `.init_connect_to(_)` so that it can initialze outgoing connections as well.
+//!
+//! [multi_channel::Channel::split] returns a pair of [mpsc::Receiver] and [broadcast::Sender].
+//!
+//! With [mpsc::Receiver], you can receive data from all connections in the connection pool as a
+//! stream, and, with [broadcast::Sender], you can broadcast data to all connections. You can also
+//! move each of `tx` and `rx` into separate threads or tasks and send and receive data
+//! concurrently.
 
 pub mod barrier;
 pub mod broadcast;

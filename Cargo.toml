@@ -1,6 +1,6 @@
 [package]
 name = "tsyncp"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 authors = ["PoOnesNerfect <jack.y.l.dev@gmail.com>"]
 license = "MIT"
@@ -11,7 +11,7 @@ documentation = "https://docs.rs/tsyncp/"
 description = """
 Async channel APIs (mpsc, broadcast, barrier, etc) over TCP for message-passing.
 """
-categories = ["network-programming"]
+categories = ["network-programming", "Web programming"]
 keywords = ["channel", "async", "mpsc", "tcp", "message-passing"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
