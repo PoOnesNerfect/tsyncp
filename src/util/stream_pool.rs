@@ -19,8 +19,9 @@ type Result<T, E = StreamPoolError> = std::result::Result<T, E>;
 #[derive(Debug)]
 pub struct StreamPool<S, const N: usize = 0> {
     pool: Pool<S, N>,
-    stream_index: usize,
-    sink_index: usize,
+    // Used for keeping track of current polling stream/sink stream index.
+    // Since stream/sink never happens at the same time, it's safe to use the same field for both.
+    index: usize,
     sink_errors: Vec<StreamPoolPollError>,
 }
 
@@ -155,8 +156,7 @@ impl<S, const N: usize> StreamPool<S, N> {
 
         StreamPool {
             pool,
-            stream_index: 0,
-            sink_index: 0,
+            index: 0,
             sink_errors: Vec::new(),
         }
     }
@@ -169,8 +169,7 @@ impl<S, const N: usize> StreamPool<S, N> {
 
         StreamPool {
             pool,
-            stream_index: 0,
-            sink_index: 0,
+            index: 0,
             sink_errors: Vec::new(),
         }
     }
@@ -183,8 +182,7 @@ impl<S, const N: usize> StreamPool<S, N> {
 
         StreamPool {
             pool,
-            stream_index: 0,
-            sink_index: 0,
+            index: 0,
             sink_errors: Vec::new(),
         }
     }
@@ -197,8 +195,7 @@ impl<S, const N: usize> StreamPool<S, N> {
 
         StreamPool {
             pool,
-            stream_index: 0,
-            sink_index: 0,
+            index: 0,
             sink_errors: Vec::new(),
         }
     }
@@ -395,7 +392,7 @@ impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
             return Poll::Ready(None);
         }
 
-        let mut index = self.stream_index % len;
+        let mut index = self.index % len;
         for _ in 0..len {
             let (stream, addr) = (*self)
                 .get_mut(index)
@@ -409,10 +406,10 @@ impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
                         let _ = self.swap_remove(index);
 
                         // since stream at this index is removed, start at the same index next poll
-                        self.stream_index = index;
+                        self.index = index;
                     } else {
                         // start poll at the next index for next poll
-                        self.stream_index = index + 1;
+                        self.index = (index + 1) % len;
                     }
 
                     return Poll::Ready(Some((item.context(PollNextSnafu), addr)));
@@ -424,7 +421,7 @@ impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
         }
 
         // next poll, start at next index
-        self.stream_index = index;
+        self.index = index;
         Poll::Pending
     }
 }
@@ -542,19 +539,19 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         let mut len = self.len();
 
         if len == 0 {
-            // if there are no streams, reset sink_index and return
-            self.sink_index = 0;
+            // if there are no streams, reset index and return
+            self.index = 0;
             return Poll::Ready(self.get_sink_res());
         }
 
         // if we were finished, then start over!
-        if self.sink_index == 0 {
+        if self.index == 0 {
             // start from last index and move down
-            self.sink_index = len;
+            self.index = len;
         }
 
-        while self.sink_index > 0 {
-            let i = self.sink_index - 1;
+        while self.index > 0 {
+            let i = self.index - 1;
 
             let (stream, _) = (*self)
                 .get_mut(i)
@@ -567,10 +564,10 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
                 len -= 1;
             }
 
-            self.sink_index -= 1;
+            self.index -= 1;
         }
 
-        // at this point, self.sink_index == 0
+        // at this point, self.index == 0
 
         if len == 0 {
             Poll::Ready(self.get_sink_res())

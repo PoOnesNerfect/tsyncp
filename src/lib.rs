@@ -87,13 +87,13 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
-//!     let mut receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").await?;
+//!     let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").await?;
 //!
 //!     // accept a new connection coming from a sender application.
-//!     receiver.accept().await?;
+//!     rx.accept().await?;
 //!
 //!     // after accepting connection, you can start receiving data from it.
-//!     if let Some(Ok(item)) = receiver.recv().await {
+//!     if let Some(Ok(item)) = rx.recv().await {
 //!         // below is to show the type of received item.
 //!         let item: Dummy = item;
 //!
@@ -136,9 +136,9 @@
 //! # }
 //! # #[tokio::main]
 //! # async fn main() -> Result<()> {
-//! let mut receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").accept(5).await?;
+//! let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").accept(5).await?;
 //!
-//! while let Some(Ok(item)) = receiver.recv().await {
+//! while let Some(Ok(item)) = rx.recv().await {
 //!     println!("received item: {item:?}");
 //! }
 //!
@@ -164,14 +164,14 @@
 //! # }
 //! # #[tokio::main]
 //! # async fn main() -> Result<()> {
-//! let mut receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114")
+//! let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114")
 //!     .limit(10)
 //!     .accept_full()
 //!     .set_tcp_reuseaddr(true)
 //!     .set_tcp_nodelay(true)
 //!     .await?;
 //!
-//! while let Some(Ok(item)) = receiver.recv().await {
+//! while let Some(Ok(item)) = rx.recv().await {
 //!     println!("received item: {item:?}");
 //! }
 //!
@@ -204,11 +204,11 @@
 //! # #[tokio::main]
 //! # async fn main() -> Result<()> {
 //! # tokio::spawn(async move {
-//! # let receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").accept(1).await?;
+//! # let rx: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").accept(1).await?;
 //! # Ok::<_, Report>(())
 //! # });
 //! # tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-//! let mut sender: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:11114").await?;
+//! let mut tx: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:11114").await?;
 //!
 //! let dummy = Dummy {
 //!     field1: String::from("hello world"),
@@ -216,7 +216,7 @@
 //!     field3: vec![1, 2, 3, 4]
 //! };
 //!
-//! sender.send(dummy).await?;
+//! tx.send(dummy).await?;
 //!
 //! # Ok(())
 //! # }
@@ -248,7 +248,7 @@
 //! let retry_interval = std::time::Duration::from_millis(500);
 //! let max_retries = 100;
 //!
-//! let mut sender: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:11114")
+//! let mut tx: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:11114")
 //!     .retry(retry_interval, max_retries)
 //!     .await?;
 //!
@@ -258,7 +258,7 @@
 //!     field3: vec![1, 2, 3, 4]
 //! };
 //!
-//! sender.send(dummy).await?;
+//! tx.send(dummy).await?;
 //!
 //! # Ok(())
 //! # }
@@ -317,14 +317,14 @@
 //! # async fn main() -> Result<()> {
 //! // Creating listening channel with `channel_on`.
 //! // By default, a channel waits to accept a connection before returning.
-//! let mut channel1: channel::JsonChannel<Dummy> = channel::channel_on("localhost:11114").await?;
+//! let mut ch1: channel::JsonChannel<Dummy> = channel::channel_on("localhost:11114").await?;
 //!
 //! // you can start receiving data right away.
-//! if let Some(Ok(item)) = channel1.recv().await {
+//! if let Some(Ok(item)) = ch1.recv().await {
 //!     println!("received item: {item:?}");
 //!
 //!     // you can also send data using the same channel.
-//!     channel1.send(item).await?;
+//!     ch1.send(item).await?;
 //! }
 //!
 //!
@@ -332,7 +332,7 @@
 //! let retry_interval = Duration::from_millis(500);
 //! let max_retries = 100;
 //!
-//! let mut channel2: channel::JsonChannel<Dummy> = channel::channel_to("localhost:11114")
+//! let mut ch2: channel::JsonChannel<Dummy> = channel::channel_to("localhost:11114")
 //!     .retry(retry_interval, max_retries)
 //!     .await?;
 //!
@@ -342,8 +342,8 @@
 //!     field3: vec![1, 2, 3, 4]
 //! };
 //!
-//! channel2.send(dummy).await?;
-//! if let Some(Ok(item)) = channel2.recv().await {
+//! ch2.send(dummy).await?;
+//! if let Some(Ok(item)) = ch2.recv().await {
 //!     println!("received item: {item:?}");
 //! }
 //! # Ok(())
@@ -374,10 +374,10 @@
 //! # async fn main() -> Result<()> {
 //! // Creating listening channel with `channel_on`.
 //! // By default, a channel waits to accept a connection before returning.
-//! let channel: channel::JsonChannel<Dummy> = channel::channel_on("localhost:11114").await?;
+//! let ch: channel::JsonChannel<Dummy> = channel::channel_on("localhost:11114").await?;
 //!
 //! // split channel into (rx, tx) pair.
-//! let (rx, tx) = channel.split();
+//! let (rx, tx) = ch.split();
 //!
 //! // Below code is just to show what type `split` returns.
 //! let rx: broadcast::JsonReceiver<Dummy> = rx;
@@ -412,13 +412,13 @@
 //! # async fn main() -> Result<()> {
 //! // Creating multi_channel with `channel_on`.
 //! // Configure to set limit to 10 connections and wait til all 10 connections are accepted.
-//! let channel: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+//! let ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
 //!     .limit(10)
 //!     .accept_full()
 //!     .await?;
 //!
 //! // split channel into (rx, tx) pair.
-//! let (rx, tx) = channel.split();
+//! let (rx, tx) = ch.split();
 //!
 //! // Below code is just to show what type `split` returns.
 //! let rx: mpsc::JsonReceiver<Dummy> = rx;
