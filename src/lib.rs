@@ -50,15 +50,15 @@
 //!
 //! All possible features are:
 //! * [full]: includes all features.
-//! * [serde]: includes features that are derivable using serde. (json, bincode)
 //! * [json]: serializing/deserializing data as json objects.
 //! * [protobuf]: serializing/deserializing data as protobuf objects.
-//! * [bincode]: encoding/decoding data as compact bytes. **WIP**
-//! * [speedy]: super fast encoding/decoding of data. **WIP**
-//! * [rkyv]: super fast encoding/decoding of data and allows zero-copy deserialization. **WIP**
+//!
+//! **WIP** features:
+//! * [bincode]: encoding/decoding data as compact bytes.
+//! * [speedy]: super fast encoding/decoding of data.
+//! * [rkyv]: super fast encoding/decoding of data and allows zero-copy deserialization.
 //!
 //! [full]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
-//! [serde]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
 //! [json]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
 //! [protobuf]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
 //! [bincode]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
