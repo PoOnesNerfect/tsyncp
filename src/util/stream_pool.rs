@@ -1,6 +1,6 @@
 use super::frame_codec::{errors::LengthDelimitedCodecError, VariedLengthDelimitedCodec};
+use super::split::{errors::SplitError, Split};
 use super::Framed;
-use super::{errors::SplitError, Split};
 use bytes::{Bytes, BytesMut};
 use errors::*;
 use futures::future::poll_fn;
@@ -346,7 +346,7 @@ impl<S, const N: usize> StreamPool<S, N> {
         }
     }
 
-    fn get_sink_res(&mut self) -> Result<(), StreamPoolSinkError> {
+    pub(crate) fn drain_sink_res(&mut self) -> Result<(), StreamPoolSinkError> {
         let mut errors = self.sink_errors.drain(..);
 
         // have first error as source
@@ -440,26 +440,40 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         item: Bytes,
         filter: Filter,
     ) -> Result<(), StreamPoolSinkError> {
-        let mut len = self.len();
+        self.await_ready_filtered(&filter).await;
+        self.start_send_filtered(item, &filter);
+        self.await_flush_filtered(&filter).await;
+
+        // Vomit all the errors collected on the way
+        self.drain_sink_res()
+    }
+}
+
+impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
+    async fn await_ready_filtered<Filter: Fn(&SocketAddr) -> bool>(&mut self, filter: &Filter) {
+        let len = self.len();
 
         // A little too eager...
         if len == 0 {
-            return Ok(());
+            return;
         }
 
-        let mut indices = (0..len)
-            .filter(|i| {
-                let (_stream, addr) = self.get(*i).expect("Element should exist with len");
-                filter(addr)
-            })
-            .collect::<Vec<_>>();
+        let mut indices = self.get_indices(&filter);
 
         // wait for poll ready
-        poll_fn(|cx| self.poll_indices(&mut indices, &mut len, |s| s.poll_ready_unpin(cx))).await;
+        poll_fn(|cx| self.poll_indices(&mut indices, |s| s.poll_ready_unpin(cx))).await;
+    }
+
+    fn start_send_filtered<Filter: Fn(&SocketAddr) -> bool>(
+        &mut self,
+        item: Bytes,
+        filter: &Filter,
+    ) {
+        let mut len = self.len();
 
         // Whatevs.... they were all trash connections anyway.
         if len == 0 {
-            return self.get_sink_res();
+            return;
         }
 
         // Go in reverse order,
@@ -488,27 +502,34 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
                 len -= 1;
             }
         }
+    }
 
-        // Third time's the charm!
+    async fn await_flush_filtered<Filter: Fn(&SocketAddr) -> bool>(&mut self, filter: &Filter) {
+        let len = self.len();
+
+        // A little too eager...
         if len == 0 {
-            return self.get_sink_res();
+            return;
         }
 
-        let mut indices = (0..len)
+        let mut indices = self.get_indices(&filter);
+
+        // wait for poll_flush
+        poll_fn(|cx| self.poll_indices(&mut indices, |s| s.poll_flush_unpin(cx))).await;
+    }
+}
+
+impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
+    fn get_indices<Filter: Fn(&SocketAddr) -> bool>(&self, filter: &Filter) -> Vec<usize> {
+        (0..self.len())
             .filter(|i| {
                 let (_stream, addr) = self.get(*i).expect("Element should exist with len");
                 filter(addr)
             })
-            .collect::<Vec<_>>();
-
-        // wait for poll_flush
-        poll_fn(|cx| self.poll_indices(&mut indices, &mut len, |s| s.poll_flush_unpin(cx))).await;
-
-        // Vomit all the errors collected on the way
-        self.get_sink_res()
+            .collect::<Vec<_>>()
     }
 
-    fn poll_indices<F>(&mut self, indices: &mut Vec<usize>, len: &mut usize, mut f: F) -> Poll<()>
+    fn poll_indices<F>(&mut self, indices: &mut Vec<usize>, mut f: F) -> Poll<()>
     where
         F: FnMut(&mut Framed<S>) -> Poll<Result<(), LengthDelimitedCodecError>>,
     {
@@ -520,8 +541,6 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
             if let Err(e) = ready!(f(stream)).context(PollSendFilteredSnafu) {
                 self.swap_remove(*i);
                 self.sink_errors.push(e);
-
-                *len -= 1;
             }
 
             // Ready or not, this index is not pending anymore.
@@ -541,7 +560,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         if len == 0 {
             // if there are no streams, reset index and return
             self.index = 0;
-            return Poll::Ready(self.get_sink_res());
+            return Poll::Ready(self.drain_sink_res());
         }
 
         // if we were finished, then start over!
@@ -570,7 +589,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         // at this point, self.index == 0
 
         if len == 0 {
-            Poll::Ready(self.get_sink_res())
+            Poll::Ready(self.drain_sink_res())
         } else {
             Poll::Ready(Ok(()))
         }
@@ -612,7 +631,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
         }
 
         if len == 0 {
-            self.get_sink_res()
+            self.drain_sink_res()
         } else {
             Ok(())
         }
@@ -623,12 +642,10 @@ impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
         // Only returns error when len is 0, so must return sink_res again later.
-        if let Err(e) = ready!(self.poll_all(|s| s.poll_flush_unpin(cx))) {
-            return Poll::Ready(Err(e));
-        }
+        ready!(self.poll_all(|s| s.poll_flush_unpin(cx)))?;
 
         // Vomit all errors collected from `poll_ready`, `start_send` and `poll_flush`.
-        Poll::Ready(self.get_sink_res())
+        Poll::Ready(self.drain_sink_res())
     }
 
     fn poll_close(
@@ -636,15 +653,13 @@ impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
         // Only returns error when len is 0, so must return sink_res again later.
-        if let Err(e) = ready!(self.poll_all(|s| s.poll_close_unpin(cx))) {
-            return Poll::Ready(Err(e));
-        }
+        ready!(self.poll_all(|s| s.poll_close_unpin(cx)))?;
 
         // After poll close, drain pool.
         while self.pop().is_some() {}
 
         // Vomit all collected errors.
-        Poll::Ready(self.get_sink_res())
+        Poll::Ready(self.drain_sink_res())
     }
 }
 
@@ -727,7 +742,7 @@ pub mod errors {
     #[snafu(visibility(pub(super)))]
     pub enum StreamPoolSplitError<E>
     where
-        E: 'static + std::error::Error,
+        E: 'static + snafu::Error,
     {
         #[snafu(display("[StreamPoolSplitError] Failed to unsplit underlying stream; read half and write half were not equal"))]
         RWUnequal,

@@ -1,6 +1,6 @@
 use super::{Receiver, Sender};
 use crate::channel;
-use crate::util::Split;
+use crate::util::split::Split;
 use errors::*;
 use futures::{ready, Future};
 use pin_project::pin_project;

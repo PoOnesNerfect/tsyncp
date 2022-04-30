@@ -1,5 +1,5 @@
 use crate::util::codec::{DecodeMethod, EncodeMethod};
-use crate::util::{Framed, Split};
+use crate::util::{split::Split, Framed};
 use crate::{broadcast, mpsc};
 use errors::*;
 use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
@@ -252,7 +252,7 @@ pub mod errors {
     #[snafu(visibility(pub(super)))]
     pub enum ChannelSinkError<E>
     where
-        E: 'static + std::error::Error,
+        E: 'static + snafu::Error,
     {
         #[snafu(display("[ChannelSinkError] Failed to encode item"))]
         ItemEncode { source: E, backtrace: Backtrace },
@@ -282,7 +282,7 @@ pub mod errors {
     #[snafu(visibility(pub(super)))]
     pub enum ChannelStreamError<E>
     where
-        E: 'static + std::error::Error,
+        E: 'static + snafu::Error,
     {
         #[snafu(display("[ChannelStreamError] Failed to decode frame of data"))]
         FrameDecode { source: E, backtrace: Backtrace },
@@ -295,7 +295,7 @@ pub mod errors {
 
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
-    pub enum ChannelUnsplitError<E: 'static + std::error::Error> {
+    pub enum ChannelUnsplitError<E: 'static + snafu::Error> {
         #[snafu(display("[ChannelUnsplitError] Underlying channels' local addrs are different: {l_local_addr:?} != {r_local_addr:?}"))]
         UnequalLocalAddr {
             l_local_addr: SocketAddr,

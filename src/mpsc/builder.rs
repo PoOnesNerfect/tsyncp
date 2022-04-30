@@ -1,5 +1,5 @@
 use super::{Receiver, Sender};
-use crate::util::{Accept, ReadListener, Split};
+use crate::util::{accept::Accept, listener::ReadListener, split::Split};
 use crate::{channel, multi_channel};
 use errors::*;
 use futures::{ready, Future};

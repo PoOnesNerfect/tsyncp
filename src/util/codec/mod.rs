@@ -12,14 +12,14 @@ use serde::{de::DeserializeOwned, Serialize};
 
 /// Trait for encoding methods which converts a given item into bytes.
 pub trait EncodeMethod<T> {
-    type Error: 'static + std::error::Error;
+    type Error: 'static + snafu::Error;
 
     fn encode(data: &T) -> Result<Bytes, Self::Error>;
 }
 
 /// Trait for decoding methods which converts given bytes into an item.
 pub trait DecodeMethod<T> {
-    type Error: 'static + std::error::Error;
+    type Error: 'static + snafu::Error;
 
     fn decode(bytes: BytesMut) -> Result<T, Self::Error>;
 }

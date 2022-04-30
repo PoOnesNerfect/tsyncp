@@ -1,6 +1,7 @@
 use crate::{
-    channel, multi_channel,
-    util::{codec::EmptyCodec, tcp, Accept, WriteListener},
+    channel,
+    multi_channel::{self, accept::AcceptFuture},
+    util::{accept::Accept, codec::EmptyCodec, listener::WriteListener, tcp},
 };
 use errors::*;
 use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
@@ -104,15 +105,6 @@ where
     }
 }
 
-impl<const N: usize, L> Barrier<N, L>
-where
-    L: Accept,
-{
-    pub async fn accept(&mut self) -> Result<SocketAddr, BarrierAcceptingError<L::Error>> {
-        self.0.accept().await.context(BarrierAcceptingSnafu)
-    }
-}
-
 impl<const N: usize, L: Accept> Barrier<N, L>
 where
     L::Output: AsyncWrite + Unpin,
@@ -185,7 +177,7 @@ pub mod errors {
     #[derive(Debug, Snafu)]
     #[snafu(display("[BarrierAcceptingError] Failed to accept stream"))]
     #[snafu(visibility(pub(super)))]
-    pub struct BarrierAcceptingError<E: 'static + std::error::Error> {
+    pub struct BarrierAcceptingError<E: 'static + snafu::Error> {
         source: multi_channel::errors::AcceptingError<E>,
         backtrace: Backtrace,
     }

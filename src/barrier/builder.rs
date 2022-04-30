@@ -1,6 +1,6 @@
 use super::{Barrier, Waiter};
 use crate::util::codec::EmptyCodec;
-use crate::util::{Accept, Split, WriteListener};
+use crate::util::{accept::Accept, listener::WriteListener, split::Split};
 use crate::{channel, multi_channel};
 use errors::*;
 use futures::{ready, Future};

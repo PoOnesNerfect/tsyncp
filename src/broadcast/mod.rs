@@ -1,8 +1,11 @@
 use crate::{
-    channel, multi_channel,
+    channel,
+    multi_channel::{self, accept::AcceptFuture, errors::SinkAcceptError},
     util::{
+        accept::Accept,
         codec::{DecodeMethod, EncodeMethod},
-        tcp, Accept, WriteListener,
+        listener::WriteListener,
+        tcp,
     },
 };
 use errors::*;
@@ -161,8 +164,8 @@ impl<T, E, const N: usize, L> Sender<T, E, N, L>
 where
     L: Accept,
 {
-    pub async fn accept(&mut self) -> Result<SocketAddr, SenderAcceptingError<L::Error>> {
-        self.0.accept().await.context(SenderAcceptingSnafu)
+    pub fn accept(&mut self) -> AcceptFuture<'_, T, E, N, L> {
+        self.0.accept()
     }
 }
 
@@ -257,7 +260,7 @@ pub mod errors {
     #[snafu(visibility(pub(super)))]
     pub struct SenderAcceptingError<E>
     where
-        E: 'static + std::error::Error,
+        E: 'static + snafu::Error,
     {
         source: multi_channel::errors::AcceptingError<E>,
         backtrace: Backtrace,
@@ -268,7 +271,7 @@ pub mod errors {
     #[snafu(visibility(pub(super)))]
     pub struct SenderError<E>
     where
-        E: 'static + std::error::Error,
+        E: 'static + snafu::Error,
     {
         source: multi_channel::errors::ChannelSinkError<E>,
         backtrace: Backtrace,
@@ -279,7 +282,7 @@ pub mod errors {
     #[snafu(visibility(pub(super)))]
     pub struct ReceiverError<E>
     where
-        E: 'static + std::error::Error,
+        E: 'static + snafu::Error,
     {
         source: channel::errors::ChannelStreamError<E>,
         backtrace: Backtrace,

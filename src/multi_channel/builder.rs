@@ -1,6 +1,5 @@
 use super::Channel;
-use crate::util::Accept;
-use crate::util::{stream_pool::StreamPool, TcpStreamSettings};
+use crate::util::{accept::Accept, stream_pool::StreamPool, TcpStreamSettings};
 use errors::*;
 use futures::Future;
 use pin_project::pin_project;

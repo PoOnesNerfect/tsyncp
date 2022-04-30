@@ -226,7 +226,7 @@ pub mod errors {
     #[snafu(visibility(pub(super)))]
     pub struct SenderError<E>
     where
-        E: 'static + std::error::Error,
+        E: 'static + snafu::Error,
     {
         source: channel::errors::ChannelSinkError<E>,
         backtrace: Backtrace,
@@ -237,7 +237,7 @@ pub mod errors {
     #[snafu(visibility(pub(super)))]
     pub struct ReceiverError<E>
     where
-        E: 'static + std::error::Error,
+        E: 'static + snafu::Error,
     {
         source: channel::errors::ChannelStreamError<E>,
         backtrace: Backtrace,

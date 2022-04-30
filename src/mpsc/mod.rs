@@ -1,8 +1,11 @@
 use crate::{
-    channel, multi_channel,
+    channel,
+    multi_channel::{self, accept::AcceptFuture},
     util::{
+        accept::Accept,
         codec::{DecodeMethod, EncodeMethod},
-        tcp, Accept, ReadListener,
+        listener::ReadListener,
+        tcp,
     },
 };
 use bytes::BytesMut;
@@ -194,8 +197,8 @@ where
     L: Accept,
     L::Error: 'static,
 {
-    pub async fn accept(&mut self) -> Result<SocketAddr, ReceiverAcceptingError<L::Error>> {
-        self.0.accept().await.context(ReceiverAcceptingSnafu)
+    pub fn accept(&mut self) -> AcceptFuture<'_, T, E, N, L> {
+        self.0.accept()
     }
 }
 
@@ -211,11 +214,11 @@ where
 
     pub async fn recv_with_addr(
         &mut self,
-    ) -> Option<(Result<T, ReceiverError<E::Error>>, SocketAddr)> {
+    ) -> Option<Result<(T, SocketAddr), ReceiverError<E::Error>>> {
         self.0
             .recv_with_addr()
             .await
-            .map(|(res, addr)| (res.context(ReceiverSnafu), addr))
+            .map(|res| res.context(ReceiverSnafu))
     }
 
     pub async fn recv_frame(&mut self) -> Option<Result<BytesMut, ReceiverError<E::Error>>> {
@@ -227,11 +230,11 @@ where
 
     pub async fn recv_frame_with_addr(
         &mut self,
-    ) -> Option<(Result<BytesMut, ReceiverError<E::Error>>, SocketAddr)> {
+    ) -> Option<Result<(BytesMut, SocketAddr), ReceiverError<E::Error>>> {
         self.0
             .recv_frame_with_addr()
             .await
-            .map(|(res, addr)| (res.context(ReceiverSnafu), addr))
+            .map(|res| res.context(ReceiverSnafu))
     }
 }
 
@@ -262,7 +265,7 @@ pub mod errors {
     #[derive(Debug, Snafu)]
     #[snafu(display("[mpsc::ReceiverAcceptingError] Failed to accept stream"))]
     #[snafu(visibility(pub(super)))]
-    pub struct ReceiverAcceptingError<E: 'static + std::error::Error> {
+    pub struct ReceiverAcceptingError<E: 'static + snafu::Error> {
         source: multi_channel::errors::AcceptingError<E>,
         backtrace: Backtrace,
     }
@@ -272,7 +275,7 @@ pub mod errors {
     #[snafu(visibility(pub(super)))]
     pub struct SenderError<E>
     where
-        E: 'static + std::error::Error,
+        E: 'static + snafu::Error,
     {
         source: channel::errors::ChannelSinkError<E>,
         backtrace: Backtrace,
@@ -283,9 +286,18 @@ pub mod errors {
     #[snafu(visibility(pub(super)))]
     pub struct ReceiverError<E>
     where
-        E: 'static + std::error::Error,
+        E: 'static + snafu::Error,
     {
         source: multi_channel::errors::ChannelStreamError<E>,
         backtrace: Backtrace,
+    }
+
+    impl<E> ReceiverError<E>
+    where
+        E: 'static + snafu::Error,
+    {
+        pub fn addr(&self) -> &SocketAddr {
+            self.source.addr()
+        }
     }
 }
