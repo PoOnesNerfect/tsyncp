@@ -1,6 +1,6 @@
 use crate::{
     channel,
-    multi_channel::{self, accept::AcceptFuture},
+    multi_channel::{self, accept::AcceptFuture, recv::RecvFuture},
     util::{
         accept::Accept,
         codec::{DecodeMethod, EncodeMethod},
@@ -208,33 +208,8 @@ where
     L: Accept,
     L::Output: AsyncRead + Unpin,
 {
-    pub async fn recv(&mut self) -> Option<Result<T, ReceiverError<E::Error>>> {
-        self.0.next().await.map(|res| res.context(ReceiverSnafu))
-    }
-
-    pub async fn recv_with_addr(
-        &mut self,
-    ) -> Option<Result<(T, SocketAddr), ReceiverError<E::Error>>> {
-        self.0
-            .recv_with_addr()
-            .await
-            .map(|res| res.context(ReceiverSnafu))
-    }
-
-    pub async fn recv_frame(&mut self) -> Option<Result<BytesMut, ReceiverError<E::Error>>> {
-        self.0
-            .recv_frame()
-            .await
-            .map(|res| res.context(ReceiverSnafu))
-    }
-
-    pub async fn recv_frame_with_addr(
-        &mut self,
-    ) -> Option<Result<(BytesMut, SocketAddr), ReceiverError<E::Error>>> {
-        self.0
-            .recv_frame_with_addr()
-            .await
-            .map(|res| res.context(ReceiverSnafu))
+    pub fn recv(&mut self) -> RecvFuture<'_, T, E, N, L> {
+        self.0.recv()
     }
 }
 

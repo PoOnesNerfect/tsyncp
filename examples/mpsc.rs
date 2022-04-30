@@ -85,8 +85,8 @@ async fn try_main() -> Result<()> {
 
         let mut i = 0;
         let now = Instant::now();
-        while let Some((item, addr)) = rx.recv_with_addr().await {
-            let _item = item?;
+        while let Some(Ok((item, addr))) = rx.recv().with_addr().await {
+            // let _item = item?;
 
             *map.get_mut(&addr.port()).unwrap() += 1;
 

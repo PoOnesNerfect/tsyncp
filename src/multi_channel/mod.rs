@@ -26,6 +26,7 @@ use tokio::net::TcpListener;
 
 pub mod accept;
 pub mod builder;
+pub mod recv;
 
 #[cfg(feature = "json")]
 pub type JsonChannel<T, const N: usize = 0> = Channel<T, crate::util::codec::JsonCodec, N>;
@@ -202,59 +203,8 @@ where
     E: DecodeMethod<T>,
     L::Output: AsyncRead + Unpin,
 {
-    pub async fn recv(&mut self) -> Option<Result<T, ChannelStreamError<E::Error>>> {
-        self.next().await
-    }
-
-    pub async fn recv_with_addr(
-        &mut self,
-    ) -> Option<Result<(T, SocketAddr), ChannelStreamError<E::Error>>> {
-        poll_fn(|cx| {
-            let (frame, addr) = match ready!(self.stream_pool.poll_next_unpin(cx)) {
-                Some((Ok(frame), addr)) => (frame, addr),
-                Some((Err(error), addr)) => {
-                    return Poll::Ready(Some(Err(error).context(PollNextSnafu { addr })))
-                }
-                None => return Poll::Ready(None),
-            };
-
-            let decoded = E::decode(frame).with_context(|_| FrameDecodeSnafu { addr });
-
-            Poll::Ready(Some(decoded.map(|d| (d, addr))))
-        })
-        .await
-    }
-
-    pub async fn recv_frame(&mut self) -> Option<Result<BytesMut, ChannelStreamError<E::Error>>> {
-        poll_fn(|cx| {
-            let frame = match ready!(self.stream_pool.poll_next_unpin(cx)) {
-                Some((Ok(frame), _)) => frame,
-                Some((Err(error), addr)) => {
-                    return Poll::Ready(Some(Err(error).context(PollNextSnafu { addr })))
-                }
-                None => return Poll::Ready(None),
-            };
-
-            Poll::Ready(Some(Ok(frame)))
-        })
-        .await
-    }
-
-    pub async fn recv_frame_with_addr(
-        &mut self,
-    ) -> Option<Result<(BytesMut, SocketAddr), ChannelStreamError<E::Error>>> {
-        poll_fn(|cx| {
-            let (frame, addr) = match ready!(self.stream_pool.poll_next_unpin(cx)) {
-                Some((Ok(frame), addr)) => (frame, addr),
-                Some((Err(error), addr)) => {
-                    return Poll::Ready(Some(Err(error).context(PollNextSnafu { addr })))
-                }
-                None => return Poll::Ready(None),
-            };
-
-            Poll::Ready(Some(Ok((frame, addr))))
-        })
-        .await
+    pub fn recv(&mut self) -> recv::RecvFuture<'_, T, E, N, L> {
+        recv::RecvFuture::new(self)
     }
 }
 

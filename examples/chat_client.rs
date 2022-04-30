@@ -15,16 +15,9 @@ struct Chat {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    if let Err(error) = try_main().await {
-        error!("Error encountered while running service: \n\n{:?}", error);
-        // error.downcast_ref::<Box<dyn snafu::ErrorCompat + Send + Sync + std::fmt::Debug>>();
-    }
-}
-
-async fn try_main() -> Result<()> {
     let ch: channel::JsonChannel<Chat> = channel::channel_to(ADDR)
         .retry(Duration::from_millis(500), 100)
         .await?;
@@ -33,35 +26,36 @@ async fn try_main() -> Result<()> {
     let mut receiver: broadcast::JsonReceiver<Chat> = receiver;
     let mut sender: mpsc::JsonSender<Chat> = sender;
 
-    // broadcast data concurrently
     let tx_handle = tokio::spawn(async move {
-        println!("Your name:");
         let mut name = String::new();
+
+        println!("Enter your name:");
         io::stdin().read_line(&mut name)?;
         name = name.trim_end().to_string();
-        println!("\nEntering chat");
+
+        println!("\nEntering chatroom...");
+        println!("Say something!");
 
         let mut buffer = String::new();
-        loop {
-            io::stdin().read_line(&mut buffer)?;
-            println!("\n");
-
+        while let Ok(_) = io::stdin().read_line(&mut buffer) {
             let chat = Chat {
                 name: name.clone(),
                 body: buffer.trim_end().to_string(),
             };
 
             sender.send(chat).await?;
+            buffer.clear();
         }
+
+        error!("Exiting chatroom due to stdio error");
 
         Ok::<_, Report>(())
     });
 
-    // consume data concurrently
     let rx_handle = tokio::spawn(async move {
         while let Some(chat) = receiver.recv().await {
             let chat = chat?;
-            println!("{}: {}\n", chat.name, chat.body);
+            println!("{}: {}", chat.name, chat.body);
         }
 
         Ok::<_, Report>(())
