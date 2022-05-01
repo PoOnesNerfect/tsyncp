@@ -2,25 +2,11 @@ use color_eyre::Result;
 use env_logger::Env;
 use futures::future::try_join_all;
 use log::{error, info};
-use prost::Message;
-use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tsyncp::barrier;
 
 const ADDR: &str = "localhost:8000";
 const LEN: usize = 10;
-
-#[derive(
-    Clone, Serialize, Deserialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive, Message,
-)]
-struct Dummy {
-    #[prost(string, tag = "1")]
-    field1: String,
-    #[prost(uint64, tag = "2")]
-    field2: u64,
-    #[prost(uint64, tag = "3")]
-    field3: u64,
-}
 
 #[tokio::main]
 async fn main() {

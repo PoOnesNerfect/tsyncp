@@ -1,7 +1,6 @@
 use color_eyre::Result;
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
-use snafu::Error;
 use tsyncp::multi_channel;
 
 const ADDR: &str = "localhost:8000";
@@ -48,9 +47,9 @@ async fn main() -> Result<()> {
         println!("{}: {}", chat.name, chat.body);
         let res = tx.send(chat).filtered(|a| a != addr).accepting().await.0;
         if let Err(e) = res {
-            if let Some(errors) = e.errors() {
+            if let Some(errors) = e.as_errors() {
                 for e in errors {
-                    log::error!("e: {}", e.description());
+                    log::error!("received error: {:?}", e);
                 }
             }
         }

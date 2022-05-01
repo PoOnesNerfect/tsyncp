@@ -4,7 +4,7 @@ use log::error;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::time::Duration;
-use tsyncp::{broadcast, channel, mpsc};
+use tsyncp::channel;
 
 const ADDR: &str = "localhost:8000";
 

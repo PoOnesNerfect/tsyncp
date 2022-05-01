@@ -2,16 +2,13 @@ use color_eyre::{Report, Result};
 use env_logger::Env;
 use log::{error, info};
 use prost::Message;
-use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use tsyncp::{broadcast, channel, mpsc};
 
 const COUNT: u64 = 100_000;
 const ADDR: &str = "localhost:8001";
 
-#[derive(
-    Clone, Serialize, Deserialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive, Message,
-)]
+#[derive(Clone, Message)]
 struct Dummy {
     #[prost(string, tag = "1")]
     field1: String,

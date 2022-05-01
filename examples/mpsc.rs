@@ -2,7 +2,6 @@ use color_eyre::Result;
 use env_logger::Env;
 use futures::future::try_join_all;
 use log::{error, info};
-use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use tsyncp::mpsc;
@@ -12,15 +11,10 @@ const LEN: usize = 10;
 
 const ADDR: &str = "localhost:8000";
 
-#[derive(
-    Clone, Serialize, Deserialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive, Message,
-)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Dummy {
-    #[prost(string, tag = "1")]
     field1: String,
-    #[prost(uint64, tag = "2")]
     field2: u64,
-    #[prost(uint64, tag = "3")]
     field3: u64,
 }
 
@@ -85,9 +79,7 @@ async fn try_main() -> Result<()> {
 
         let mut i = 0;
         let now = Instant::now();
-        while let Some(Ok((item, addr))) = rx.recv().with_addr().await {
-            // let _item = item?;
-
+        while let Some(Ok((_item, addr))) = rx.recv().with_addr().await {
             *map.get_mut(&addr.port()).unwrap() += 1;
 
             i += 1;

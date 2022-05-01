@@ -57,54 +57,54 @@ impl DecodeMethod<()> for EmptyCodec {
     }
 }
 
-#[cfg(feature = "rkyv")]
-pub use rkyv_mod::*;
-#[cfg(feature = "rkyv")]
-mod rkyv_mod {
+#[cfg(feature = "json")]
+pub use json::*;
+#[cfg(feature = "json")]
+mod json {
     use super::*;
-    use rkyv::{
-        ser::serializers::{
-            AlignedSerializer, AllocScratch, AllocScratchError, CompositeSerializer,
-            CompositeSerializerError, FallbackScratch, HeapScratch, SharedSerializeMap,
-            SharedSerializeMapError,
-        },
-        AlignedVec,
-    };
 
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    pub struct RkyvCodec;
+    pub struct JsonCodec;
 
-    impl<
-            T: rkyv::Serialize<
-                CompositeSerializer<
-                    AlignedSerializer<AlignedVec>,
-                    FallbackScratch<HeapScratch<256_usize>, AllocScratch>,
-                    SharedSerializeMap,
-                >,
-            >,
-        > EncodeMethod<T> for RkyvCodec
-    {
-        // type Error = CompositeSerializerError<Infallible, AllocScratchError>;
-        type Error = CompositeSerializerError<
-            std::convert::Infallible,
-            AllocScratchError,
-            SharedSerializeMapError,
-        >;
+    impl<T: Serialize> EncodeMethod<T> for JsonCodec {
+        type Error = serde_json::Error;
 
         fn encode(data: &T) -> Result<Bytes, Self::Error> {
-            rkyv::to_bytes::<_, 256>(data).map(|bytes| Bytes::from(bytes.to_vec()))
+            serde_json::to_vec(data).map(Into::into)
         }
     }
 
-    impl<T: rkyv::Archive> DecodeMethod<T> for RkyvCodec {
-        type Error = std::convert::Infallible;
+    impl<T: DeserializeOwned> DecodeMethod<T> for JsonCodec {
+        type Error = serde_json::Error;
 
-        fn decode(_bytes: BytesMut) -> Result<T, Self::Error> {
-            // let archived = unsafe { rkyv::archived_root::<T>(&bytes[..]) };
-            // let t: T = archived.deserialize(&mut rkyv::Infallible).unwrap();
+        fn decode(bytes: BytesMut) -> Result<T, Self::Error> {
+            serde_json::from_slice(bytes.as_ref())
+        }
+    }
+}
 
-            // Ok(t)
-            todo!();
+#[cfg(feature = "bincode")]
+pub use bincode_mod::*;
+#[cfg(feature = "bincode")]
+mod bincode_mod {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct BincodeCodec;
+
+    impl<T: Serialize> EncodeMethod<T> for BincodeCodec {
+        type Error = bincode::Error;
+
+        fn encode(data: &T) -> Result<Bytes, Self::Error> {
+            bincode::serialize(data).map(Into::into)
+        }
+    }
+
+    impl<T: DeserializeOwned> DecodeMethod<T> for BincodeCodec {
+        type Error = bincode::Error;
+
+        fn decode(bytes: BytesMut) -> Result<T, Self::Error> {
+            bincode::deserialize(bytes.as_ref())
         }
     }
 }
@@ -135,28 +135,56 @@ mod protobuf {
     }
 }
 
-#[cfg(feature = "json")]
-pub use json::*;
-#[cfg(feature = "json")]
-mod json {
-    use super::*;
+// #[cfg(feature = "rkyv")]
+// pub use rkyv_mod::*;
+// #[cfg(feature = "rkyv")]
+// mod rkyv_mod {
+//     use super::{DecodeMethod, EncodeMethod};
+//     use bytecheck::CheckBytes;
+//     use bytes::{Bytes, BytesMut};
+//     use rkyv::{
+//         ser::serializers::{
+//             AlignedSerializer, AllocScratch, AllocScratchError, CompositeSerializer,
+//             CompositeSerializerError, FallbackScratch, HeapScratch, SharedSerializeMap,
+//             SharedSerializeMapError,
+//         },
+//         AlignedVec,
+//     };
 
-    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    pub struct JsonCodec;
+//     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+//     pub struct RkyvCodec;
 
-    impl<T: Serialize> EncodeMethod<T> for JsonCodec {
-        type Error = serde_json::Error;
+//     impl<
+//             T: rkyv::Serialize<
+//                 CompositeSerializer<
+//                     AlignedSerializer<AlignedVec>,
+//                     FallbackScratch<HeapScratch<256_usize>, AllocScratch>,
+//                     SharedSerializeMap,
+//                 >,
+//             >,
+//         > EncodeMethod<T> for RkyvCodec
+//     {
+//         // type Error = CompositeSerializerError<Infallible, AllocScratchError>;
+//         type Error = CompositeSerializerError<
+//             std::convert::Infallible,
+//             AllocScratchError,
+//             SharedSerializeMapError,
+//         >;
 
-        fn encode(data: &T) -> Result<Bytes, Self::Error> {
-            serde_json::to_vec(data).map(Into::into)
-        }
-    }
+//         fn encode(data: &T) -> Result<Bytes, Self::Error> {
+//             rkyv::to_bytes::<_, 256>(data).map(|bytes| Bytes::from(bytes.to_vec()))
+//         }
+//     }
 
-    impl<T: DeserializeOwned> DecodeMethod<T> for JsonCodec {
-        type Error = serde_json::Error;
+//     impl<T: rkyv::Archive + CheckBytes> DecodeMethod<T> for RkyvCodec {
+//         type Error = std::convert::Infallible;
 
-        fn decode(bytes: BytesMut) -> Result<T, Self::Error> {
-            serde_json::from_slice(bytes.as_ref())
-        }
-    }
-}
+//         fn decode(bytes: BytesMut) -> Result<T, Self::Error> {
+//             let archived = rkyv::check_archived_root::<T>(&bytes[..]).unwrap();
+//             let t: T = archived.deserialize(&mut rkyv::Infallible).unwrap();
+
+//             // Ok(t)
+//             todo!();
+//         }
+//     }
+// }

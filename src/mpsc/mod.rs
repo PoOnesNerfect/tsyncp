@@ -30,6 +30,12 @@ pub type ProtobufSender<T> = Sender<T, crate::util::codec::ProtobufCodec>;
 pub type ProtobufReceiver<T, const N: usize = 0> =
     Receiver<T, crate::util::codec::ProtobufCodec, N>;
 
+#[cfg(feature = "bincode")]
+pub type BincodeSender<T> = Sender<T, crate::util::codec::BincodeCodec>;
+
+#[cfg(feature = "bincode")]
+pub type BincodeReceiver<T, const N: usize = 0> = Receiver<T, crate::util::codec::BincodeCodec, N>;
+
 #[cfg(feature = "rkyv")]
 pub type RkyvSender<T, const N: usize = 0> = Sender<T, crate::util::codec::RkyvCodec>;
 

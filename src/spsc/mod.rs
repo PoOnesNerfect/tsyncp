@@ -11,17 +11,23 @@ pub mod builder;
 #[cfg(feature = "json")]
 pub type JsonSender<T> = Sender<T, crate::util::codec::JsonCodec>;
 
-#[cfg(feature = "protobuf")]
-pub type ProtobufSender<T> = Sender<T, crate::util::codec::ProtobufCodec>;
-
-#[cfg(feature = "rkyv")]
-pub type RkyvSender<T> = Sender<T, crate::util::codec::RkyvCodec>;
-
 #[cfg(feature = "json")]
 pub type JsonReceiver<T> = Receiver<T, crate::util::codec::JsonCodec>;
 
 #[cfg(feature = "protobuf")]
+pub type ProtobufSender<T> = Sender<T, crate::util::codec::ProtobufCodec>;
+
+#[cfg(feature = "protobuf")]
 pub type ProtobufReceiver<T> = Receiver<T, crate::util::codec::ProtobufCodec>;
+
+#[cfg(feature = "bincode")]
+pub type BincodeSender<T> = Sender<T, crate::util::codec::BincodeCodec>;
+
+#[cfg(feature = "bincode")]
+pub type BincodeReceiver<T> = Receiver<T, crate::util::codec::BincodeCodec>;
+
+#[cfg(feature = "rkyv")]
+pub type RkyvSender<T> = Sender<T, crate::util::codec::RkyvCodec>;
 
 #[cfg(feature = "rkyv")]
 pub type RkyvReceiver<T, const N: usize = 0> = Receiver<T, crate::util::codec::RkyvCodec>;

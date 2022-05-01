@@ -19,6 +19,9 @@ pub type JsonChannel<T> = Channel<T, crate::util::codec::JsonCodec>;
 #[cfg(feature = "protobuf")]
 pub type ProtobufChannel<T> = Channel<T, crate::util::codec::ProtobufCodec>;
 
+#[cfg(feature = "bincode")]
+pub type BincodeChannel<T> = Channel<T, crate::util::codec::BincodeCodec>;
+
 #[cfg(feature = "rkyv")]
 pub type RkyvChannel<T> = Channel<T, crate::util::codec::RkyvCodec>;
 

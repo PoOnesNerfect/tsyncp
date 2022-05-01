@@ -1,7 +1,6 @@
 use color_eyre::Result;
 use env_logger::Env;
 use log::{error, info};
-use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tsyncp::spsc;
@@ -9,15 +8,10 @@ use tsyncp::spsc;
 const ADDR1: &str = "localhost:8000";
 const ADDR2: &str = "localhost:8001";
 
-#[derive(
-    Clone, Serialize, Deserialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive, Message,
-)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Dummy {
-    #[prost(string, tag = "1")]
     field1: String,
-    #[prost(uint64, tag = "2")]
     field2: u64,
-    #[prost(uint64, tag = "3")]
     field3: u64,
 }
 
@@ -54,8 +48,7 @@ async fn try_main() -> Result<()> {
             .await?;
         let port = receiver.local_addr().port();
 
-        if let Some(item) = receiver.recv().await {
-            let item = item?;
+        if let Some(Ok(item)) = receiver.recv().await {
             info!("{port} received {item:?}");
         }
 

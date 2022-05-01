@@ -3,7 +3,6 @@ use env_logger::Env;
 use futures::future::try_join_all;
 use log::{error, info};
 use prost::Message;
-use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use tsyncp::{broadcast, channel, mpsc, multi_channel};
 
@@ -12,9 +11,7 @@ const LEN: usize = 10;
 
 const ADDR: &str = "localhost:8000";
 
-#[derive(
-    Clone, Serialize, Deserialize, rkyv::Serialize, rkyv::Deserialize, rkyv::Archive, Message,
-)]
+#[derive(Clone, Message)]
 struct Dummy {
     #[prost(string, tag = "1")]
     field1: String,
@@ -67,9 +64,7 @@ async fn try_main() -> Result<()> {
         let rx_handle = tokio::spawn(async move {
             let mut i = 0;
             let now = Instant::now();
-            while let Some((item, _addr)) = rx.recv_with_addr().await {
-                let _item = item?;
-
+            while let Some(Ok((_item, _addr))) = rx.recv().with_addr().await {
                 i += 1;
 
                 if i % (COUNT * LEN / 10) == 0 {
