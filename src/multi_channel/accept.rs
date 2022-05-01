@@ -1,299 +1,9 @@
-use super::{
-    errors::{AcceptingError, ChannelSinkError, ChannelStreamError},
-    AcceptingSnafu, Channel, FrameDecodeSnafu, ItemEncodeSnafu, PollCloseSnafu, PollFlushSnafu,
-    PollNextSnafu, PollReadySnafu, PushStreamSnafu, SendFilteredSnafu, SendToSnafu, StartSendSnafu,
-};
-use crate::util::{
-    accept::Accept,
-    codec::{DecodeMethod, EncodeMethod},
-    stream_pool::StreamPool,
-};
-use bytes::BytesMut;
-use futures::{future::poll_fn, ready, Future, FutureExt, Sink, SinkExt, Stream, StreamExt};
+use super::{errors::AcceptingError, AcceptingSnafu, Channel, PushStreamSnafu};
+use crate::util::accept::Accept;
+use futures::{ready, Future, FutureExt};
 use pin_project::pin_project;
 use snafu::ResultExt;
 use std::{marker::PhantomData, net::SocketAddr, task::Poll};
-use tokio::io::{AsyncRead, AsyncWrite};
-
-#[derive(Debug)]
-#[pin_project]
-pub struct ChannelRef<'pin, T, E, const N: usize, L>
-where
-    L: Accept,
-{
-    local_addr: SocketAddr,
-    #[pin]
-    stream_pool: &'pin mut StreamPool<L::Output, N>,
-    _phantom: PhantomData<(T, E)>,
-}
-
-impl<'pin, T, E, const N: usize, L> ChannelRef<'pin, T, E, N, L>
-where
-    L: Accept,
-{
-    pub fn new(stream_pool: &'pin mut StreamPool<L::Output, N>, local_addr: SocketAddr) -> Self {
-        Self {
-            local_addr,
-            stream_pool,
-            _phantom: PhantomData,
-        }
-    }
-
-    pub fn local_addr(&self) -> &SocketAddr {
-        &self.local_addr
-    }
-
-    pub fn peer_addrs(&self) -> Vec<SocketAddr> {
-        self.stream_pool.addrs()
-    }
-
-    pub fn len(&self) -> usize {
-        self.stream_pool.len()
-    }
-
-    pub fn limit(&self) -> Option<usize> {
-        self.stream_pool.limit()
-    }
-}
-
-impl<'pin, T, E, const N: usize, L> ChannelRef<'pin, T, E, N, L>
-where
-    L: Accept,
-    E: DecodeMethod<T>,
-    L::Output: AsyncRead + Unpin,
-{
-    pub async fn recv(&mut self) -> Option<Result<T, ChannelStreamError<E::Error>>> {
-        StreamExt::next(self).await
-    }
-
-    pub async fn recv_with_addr(
-        &mut self,
-    ) -> Option<Result<(T, SocketAddr), ChannelStreamError<E::Error>>> {
-        poll_fn(|cx| {
-            let (frame, addr) = match ready!(self.stream_pool.poll_next_unpin(cx)) {
-                Some((Ok(frame), addr)) => (frame, addr),
-                Some((Err(error), addr)) => {
-                    return Poll::Ready(Some(Err(error).context(PollNextSnafu { addr })))
-                }
-                None => return Poll::Ready(None),
-            };
-
-            let decoded = E::decode(frame).with_context(|_| FrameDecodeSnafu { addr });
-
-            Poll::Ready(Some(decoded.map(|d| (d, addr))))
-        })
-        .await
-    }
-
-    pub async fn recv_frame(&mut self) -> Option<Result<BytesMut, ChannelStreamError<E::Error>>> {
-        poll_fn(|cx| {
-            let frame = match ready!(self.stream_pool.poll_next_unpin(cx)) {
-                Some((Ok(frame), _)) => frame,
-                Some((Err(error), addr)) => {
-                    return Poll::Ready(Some(Err(error).context(PollNextSnafu { addr })))
-                }
-                None => return Poll::Ready(None),
-            };
-
-            Poll::Ready(Some(Ok(frame)))
-        })
-        .await
-    }
-
-    pub async fn recv_frame_with_addr(
-        &mut self,
-    ) -> Option<Result<(BytesMut, SocketAddr), ChannelStreamError<E::Error>>> {
-        poll_fn(|cx| {
-            let (frame, addr) = match ready!(self.stream_pool.poll_next_unpin(cx)) {
-                Some((Ok(frame), addr)) => (frame, addr),
-                Some((Err(error), addr)) => {
-                    return Poll::Ready(Some(Err(error).context(PollNextSnafu { addr })))
-                }
-                None => return Poll::Ready(None),
-            };
-
-            Poll::Ready(Some(Ok((frame, addr))))
-        })
-        .await
-    }
-}
-
-impl<'pin, T, E: DecodeMethod<T>, const N: usize, L: Accept> Stream for ChannelRef<'pin, T, E, N, L>
-where
-    L::Output: AsyncRead + Unpin,
-{
-    type Item = Result<T, ChannelStreamError<E::Error>>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        let (frame, addr) = match ready!(self.project().stream_pool.poll_next(cx)) {
-            Some((Ok(frame), addr)) => (frame, addr),
-            Some((Err(error), addr)) => {
-                return Poll::Ready(Some(Err(error).context(PollNextSnafu { addr })))
-            }
-            None => return Poll::Ready(None),
-        };
-
-        let decoded = E::decode(frame).context(FrameDecodeSnafu { addr });
-
-        Poll::Ready(Some(decoded))
-    }
-}
-
-impl<'pin, T, E, const N: usize, L> ChannelRef<'pin, T, E, N, L>
-where
-    T: Clone,
-    E: EncodeMethod<T>,
-    L: Accept,
-    L::Output: AsyncWrite + Unpin,
-{
-    pub async fn send(&mut self, item: T) -> Result<(), ChannelSinkError<E::Error>> {
-        SinkExt::send(self, item).await
-    }
-
-    pub async fn send_to(
-        &mut self,
-        item: T,
-        addrs: &[SocketAddr],
-    ) -> Result<(), ChannelSinkError<E::Error>> {
-        let encoded = E::encode(&item).context(ItemEncodeSnafu)?;
-
-        self.stream_pool
-            .send_to(encoded, addrs)
-            .await
-            .with_context(|_| SendToSnafu {
-                addrs: addrs.to_vec(),
-            })?;
-
-        Ok(())
-    }
-
-    pub async fn send_filtered<Filter: Fn(&SocketAddr) -> bool>(
-        &mut self,
-        item: T,
-        filter: Filter,
-    ) -> Result<(), ChannelSinkError<E::Error>> {
-        let encoded = E::encode(&item).context(ItemEncodeSnafu)?;
-
-        self.stream_pool
-            .send_filtered(encoded, filter)
-            .await
-            .context(SendFilteredSnafu)?;
-
-        Ok(())
-    }
-}
-
-impl<'pin, T: Clone, E: EncodeMethod<T>, const N: usize, L: Accept> Sink<T>
-    for ChannelRef<'pin, T, E, N, L>
-where
-    L::Output: AsyncWrite + Unpin,
-{
-    type Error = ChannelSinkError<E::Error>;
-
-    fn start_send(self: std::pin::Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
-        let encoded = E::encode(&item).context(ItemEncodeSnafu)?;
-
-        self.project()
-            .stream_pool
-            .start_send(encoded)
-            .context(StartSendSnafu)?;
-
-        Ok(())
-    }
-
-    fn poll_ready(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        let res = ready!(self.project().stream_pool.poll_ready(cx)).context(PollReadySnafu);
-
-        Poll::Ready(res)
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        let res = ready!(self.project().stream_pool.poll_flush(cx)).context(PollFlushSnafu);
-
-        Poll::Ready(res)
-    }
-
-    fn poll_close(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        let res = ready!(self.project().stream_pool.poll_close(cx)).context(PollCloseSnafu);
-
-        Poll::Ready(res)
-    }
-}
-
-#[derive(Debug)]
-pub struct ListenerRef<'pin, L>
-where
-    L: Accept,
-{
-    listener: &'pin mut L,
-    stream_config: &'pin mut L::Config,
-    done: bool,
-}
-
-impl<'pin, L> Drop for ListenerRef<'pin, L>
-where
-    L: Accept,
-{
-    fn drop(&mut self) {
-        if !self.done {
-            self.handle_abrupt_drop();
-        }
-    }
-}
-
-impl<'pin, L> ListenerRef<'pin, L>
-where
-    L: Accept,
-{
-    fn new(listener: &'pin mut L, stream_config: &'pin mut L::Config) -> Self {
-        Self {
-            listener,
-            stream_config,
-            done: false,
-        }
-    }
-
-    fn config(&self) -> &L::Config {
-        &self.stream_config
-    }
-
-    pub fn mark_done(&mut self) {
-        self.done = true;
-    }
-}
-
-impl<'pin, L> Accept for ListenerRef<'pin, L>
-where
-    L: Accept,
-{
-    type Output = L::Output;
-    type Config = L::Config;
-    type Error = L::Error;
-
-    fn poll_accept(
-        &self,
-        config: &Self::Config,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(Self::Output, SocketAddr), Self::Error>> {
-        self.listener.poll_accept(config, cx)
-    }
-
-    fn handle_abrupt_drop(&self) {
-        self.listener.handle_abrupt_drop()
-    }
-}
 
 #[derive(Debug)]
 #[pin_project]
@@ -310,32 +20,6 @@ where
 {
     pub fn new(channel: &'pin mut Channel<T, E, N, L>) -> Self {
         Self { channel }
-    }
-
-    pub fn until<P, Until, Fut, O>(
-        self,
-        capture: P,
-        until: Until,
-    ) -> UntilAcceptFuture<'pin, T, E, N, L, Fut, O>
-    where
-        Until: Fn(ChannelRef<'pin, T, E, N, L>, P) -> Fut,
-        Fut: Future<Output = (O, ChannelRef<'pin, T, E, N, L>)>,
-    {
-        let Channel {
-            listener,
-            local_addr,
-            stream_pool,
-            stream_config,
-            ..
-        } = self.channel;
-
-        let limit = stream_pool.limit();
-
-        let listener = ListenerRef::new(listener, stream_config);
-
-        let channel = ChannelRef::new(stream_pool, *local_addr);
-
-        UntilAcceptFuture::new(listener, limit, until(channel, capture))
     }
 }
 
@@ -368,97 +52,100 @@ where
 
 #[derive(Debug)]
 #[pin_project]
-pub struct UntilAcceptFuture<'pin, T, E, const N: usize, L, Fut, O>
+pub struct WhileAcceptingFuture<'pin, T, E, const N: usize, L, Fut>
 where
     L: Accept,
-    L::Output: 'pin,
-    Fut: Future<Output = (O, ChannelRef<'pin, T, E, N, L>)>,
+    Fut: AsMut<Channel<T, E, N, L>> + Future + Unpin,
 {
-    listener: ListenerRef<'pin, L>,
-    limit: Option<usize>,
-    accepts: Vec<SocketAddr>,
-    streams: Vec<(L::Output, SocketAddr)>,
-    should_accept: bool,
     #[pin]
     fut: Fut,
-    _phantom: PhantomData<(T, E)>,
+    limit: Option<usize>,
+    addrs: Vec<SocketAddr>,
+    err: Option<AcceptingError<L::Error>>,
+    _phantom: PhantomData<(&'pin (), T, E, L)>,
 }
 
-impl<'pin, T, E, const N: usize, L, Fut, O> UntilAcceptFuture<'pin, T, E, N, L, Fut, O>
+impl<'pin, T, E, const N: usize, L, Fut> WhileAcceptingFuture<'pin, T, E, N, L, Fut>
 where
     L: Accept,
-    Fut: Future<Output = (O, ChannelRef<'pin, T, E, N, L>)>,
+    Fut: AsRef<Channel<T, E, N, L>> + AsMut<Channel<T, E, N, L>> + Future + Unpin,
 {
-    pub fn new(
-        listener: ListenerRef<'pin, L>,
-        limit: Option<usize>,
-        fut: Fut,
-    ) -> UntilAcceptFuture<T, E, N, L, Fut, O> {
+    pub(super) fn new(fut: Fut) -> Self {
+        let limit = fut.as_ref().limit();
+
         Self {
-            listener,
-            limit,
-            accepts: Vec::new(),
-            streams: Vec::new(),
-            should_accept: true,
             fut,
-            _phantom: PhantomData, // channel,
+            limit,
+            addrs: Vec::new(),
+            err: None,
+            _phantom: PhantomData,
         }
     }
 
     pub fn limit(mut self, limit: usize) -> Self {
-        if let Some(lim) = self.limit {
-            self.limit = Some(lim.min(limit));
-        } else {
-            self.limit.replace(limit);
-        }
+        self.limit = self.limit.map(|lim| lim.min(limit));
+
         self
+    }
+
+    fn should_accept(&self) -> bool {
+        let channel_ref = self.fut.as_ref();
+
+        self.err.is_none()
+            && self
+                .limit
+                .map(|lim| channel_ref.len() < lim)
+                .unwrap_or(true)
     }
 }
 
-impl<'pin, T, E, const N: usize, L, Fut, O> Future for UntilAcceptFuture<'pin, T, E, N, L, Fut, O>
+impl<'pin, T, E, const N: usize, L, Fut> Future for WhileAcceptingFuture<'pin, T, E, N, L, Fut>
 where
     L: Accept,
-    Fut: Future<Output = (O, ChannelRef<'pin, T, E, N, L>)>,
+    Fut: AsRef<Channel<T, E, N, L>> + AsMut<Channel<T, E, N, L>> + Future + Unpin,
 {
-    type Output = (O, Vec<SocketAddr>);
+    type Output = (
+        Fut::Output,
+        Result<Vec<SocketAddr>, AcceptingError<L::Error>>,
+    );
 
     fn poll(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let this = self.project();
+    ) -> Poll<Self::Output> {
+        let channel_ref = self.fut.as_ref();
 
-        // if there is a limit, and if there is room til the limit,
-        // then poll accept again
-        let should_accept = *this.should_accept
-            && this
-                .limit
-                .map(|lim| this.streams.len() < lim)
-                .unwrap_or(true);
-
-        if should_accept {
-            if let Poll::Ready(res) = this.listener.poll_accept(this.listener.config(), cx) {
-                match res {
+        if self.should_accept() {
+            if let Poll::Ready(res) = channel_ref
+                .listener
+                .poll_accept(&channel_ref.stream_config, cx)
+            {
+                match res.context(AcceptingSnafu) {
                     Ok((s, a)) => {
-                        this.streams.push((s, a));
-                        this.accepts.push(a);
+                        let channel_mut = self.fut.as_mut();
+                        channel_mut
+                            .stream_pool
+                            .push_stream(s, a)
+                            .expect("Len is within limit");
+                        self.addrs.push(a);
                     }
                     Err(e) => {
-                        *this.should_accept = false;
-                        // this.accepts.push(Err(e).context(AcceptingSnafu));
+                        self.err.replace(e);
                     }
                 }
             }
         }
 
-        let (o, ch) = ready!(this.fut.poll(cx));
+        let output = ready!(self.fut.poll_unpin(cx));
+        let addrs = if self.err.is_none() {
+            Ok(self.addrs.drain(..).collect())
+        } else {
+            Err(self.err.take().unwrap())
+        };
 
-        for (s, a) in this.streams.drain(..) {
-            ch.stream_pool
-                .push_stream(s, a)
-                .expect("Only streams within limit were pushed");
-        }
+        // in case accepting stops without polling through
+        self.fut.as_mut().listener.handle_abrupt_drop();
 
-        Poll::Ready((o, this.accepts.drain(..).collect()))
+        Poll::Ready((output, addrs))
     }
 }

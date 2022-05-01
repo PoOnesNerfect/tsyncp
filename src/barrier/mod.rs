@@ -1,10 +1,10 @@
 use crate::{
     channel,
-    multi_channel::{self, accept::AcceptFuture},
+    multi_channel::{self, send::SendFuture},
     util::{accept::Accept, codec::EmptyCodec, listener::WriteListener, tcp},
 };
 use errors::*;
-use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
+use futures::{ready, Future, Sink, Stream, StreamExt};
 use snafu::{Backtrace, ResultExt};
 use std::{
     net::{SocketAddr, ToSocketAddrs},
@@ -109,19 +109,8 @@ impl<const N: usize, L: Accept> Barrier<N, L>
 where
     L::Output: AsyncWrite + Unpin,
 {
-    pub async fn release(&mut self) -> Result<(), BarrierError> {
-        SinkExt::send(self, ()).await
-    }
-
-    pub async fn release_to(&mut self, addrs: &[SocketAddr]) -> Result<(), BarrierError> {
-        self.0.send_to((), addrs).await.context(BarrierSnafu)
-    }
-
-    pub async fn release_filtered<Filter: Fn(&SocketAddr) -> bool>(
-        &mut self,
-        filter: Filter,
-    ) -> Result<(), BarrierError> {
-        self.0.send_filtered((), filter).await.context(BarrierSnafu)
+    pub fn release(&mut self) -> SendFuture<'_, (), EmptyCodec, N, L> {
+        self.0.send(())
     }
 }
 

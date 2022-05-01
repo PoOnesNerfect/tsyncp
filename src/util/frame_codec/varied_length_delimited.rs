@@ -322,6 +322,14 @@ pub mod errors {
 
             None
         }
+
+        pub fn into_io(self) -> Option<io::Error> {
+            if let Self::IoError { source } = self {
+                return Some(source);
+            }
+
+            None
+        }
     }
 }
 

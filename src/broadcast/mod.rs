@@ -1,6 +1,6 @@
 use crate::{
     channel,
-    multi_channel::{self, accept::AcceptFuture, errors::SinkAcceptError},
+    multi_channel::{self, accept::AcceptFuture, errors::SinkAcceptError, send::SendFuture},
     util::{
         accept::Accept,
         codec::{DecodeMethod, EncodeMethod},
@@ -91,8 +91,8 @@ impl<T, E, S> Receiver<T, E, S> {
 }
 
 impl<T: Clone, E: DecodeMethod<T>, S: AsyncRead + Unpin> Receiver<T, E, S> {
-    pub async fn recv(&mut self) -> Option<Result<T, ReceiverError<E::Error>>> {
-        self.next().await
+    pub fn recv(&mut self) -> crate::channel::recv::RecvFuture<'_, T, E, S> {
+        self.0.recv()
     }
 }
 
@@ -176,31 +176,12 @@ where
     L: Accept,
     L::Output: AsyncWrite + Unpin,
 {
-    pub async fn send(&mut self, item: T) -> Result<(), SenderError<E::Error>> {
-        SinkExt::send(self, item).await
+    pub fn send(&mut self, item: T) -> SendFuture<'_, T, E, N, L> {
+        self.0.send(item)
     }
 
-    pub async fn broadcast(&mut self, item: T) -> Result<(), SenderError<E::Error>> {
-        self.send(item).await
-    }
-
-    pub async fn send_to(
-        &mut self,
-        item: T,
-        addrs: &[SocketAddr],
-    ) -> Result<(), SenderError<E::Error>> {
-        self.0.send_to(item, addrs).await.context(SenderSnafu)
-    }
-
-    pub async fn send_filtered<Filter: Fn(&SocketAddr) -> bool>(
-        &mut self,
-        item: T,
-        filter: Filter,
-    ) -> Result<(), SenderError<E::Error>> {
-        self.0
-            .send_filtered(item, filter)
-            .await
-            .context(SenderSnafu)
+    pub fn broadcast(&mut self, item: T) -> SendFuture<'_, T, E, N, L> {
+        self.send(item)
     }
 }
 

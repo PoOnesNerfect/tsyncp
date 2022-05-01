@@ -427,44 +427,15 @@ impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
 }
 
 impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
-    pub async fn send_to(
+    pub(crate) fn poll_ready_indices(
         &mut self,
-        item: Bytes,
-        addrs: &[SocketAddr],
-    ) -> Result<(), StreamPoolSinkError> {
-        self.send_filtered(item, |a| addrs.contains(a)).await
+        indices: &mut Vec<usize>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<()> {
+        self.poll_indices(indices, |s| s.poll_ready_unpin(cx))
     }
 
-    pub async fn send_filtered<Filter: Fn(&SocketAddr) -> bool>(
-        &mut self,
-        item: Bytes,
-        filter: Filter,
-    ) -> Result<(), StreamPoolSinkError> {
-        self.await_ready_filtered(&filter).await;
-        self.start_send_filtered(item, &filter);
-        self.await_flush_filtered(&filter).await;
-
-        // Vomit all the errors collected on the way
-        self.drain_sink_res()
-    }
-}
-
-impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
-    async fn await_ready_filtered<Filter: Fn(&SocketAddr) -> bool>(&mut self, filter: &Filter) {
-        let len = self.len();
-
-        // A little too eager...
-        if len == 0 {
-            return;
-        }
-
-        let mut indices = self.get_indices(&filter);
-
-        // wait for poll ready
-        poll_fn(|cx| self.poll_indices(&mut indices, |s| s.poll_ready_unpin(cx))).await;
-    }
-
-    fn start_send_filtered<Filter: Fn(&SocketAddr) -> bool>(
+    pub(crate) fn start_send_filtered<Filter: Fn(SocketAddr) -> bool>(
         &mut self,
         item: Bytes,
         filter: &Filter,
@@ -482,7 +453,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         let indices = (0..len)
             .filter(|i| {
                 let (_stream, addr) = self.get(*i).expect("Element should exist with len");
-                filter(addr)
+                filter(*addr)
             })
             .rev()
             .collect::<Vec<_>>();
@@ -504,27 +475,24 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         }
     }
 
-    async fn await_flush_filtered<Filter: Fn(&SocketAddr) -> bool>(&mut self, filter: &Filter) {
-        let len = self.len();
-
-        // A little too eager...
-        if len == 0 {
-            return;
-        }
-
-        let mut indices = self.get_indices(&filter);
-
-        // wait for poll_flush
-        poll_fn(|cx| self.poll_indices(&mut indices, |s| s.poll_flush_unpin(cx))).await;
+    pub(crate) fn poll_flush_indices(
+        &mut self,
+        indices: &mut Vec<usize>,
+        cx: &mut std::task::Context<'_>,
+    ) -> Poll<()> {
+        self.poll_indices(indices, |s| s.poll_flush_unpin(cx))
     }
 }
 
 impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
-    fn get_indices<Filter: Fn(&SocketAddr) -> bool>(&self, filter: &Filter) -> Vec<usize> {
+    pub(crate) fn get_indices<Filter>(&self, filter: &Filter) -> Vec<usize>
+    where
+        Filter: Fn(SocketAddr) -> bool,
+    {
         (0..self.len())
             .filter(|i| {
                 let (_stream, addr) = self.get(*i).expect("Element should exist with len");
-                filter(addr)
+                filter(*addr)
             })
             .collect::<Vec<_>>()
     }
@@ -538,7 +506,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         // we can swap_remove it and... just flush it away.
         while let Some(i) = indices.last() {
             let (stream, _) = self.get_mut(*i).expect("Element should exist with index");
-            if let Err(e) = ready!(f(stream)).context(PollSendFilteredSnafu) {
+            if let Err(e) = ready!(f(stream)).context(PollIndicesSnafu) {
                 self.swap_remove(*i);
                 self.sink_errors.push(e);
             }
@@ -718,23 +686,26 @@ pub mod errors {
             }
         }
 
-        pub fn as_io(&self) -> Option<&std::io::Error> {
-            self.source.as_io()
-        }
-
         pub fn errors(&self) -> impl Iterator<Item = &StreamPoolPollError> {
             std::iter::once(&self.source).chain(self.errors.iter())
         }
 
-        pub fn io_errors(&self) -> impl Iterator<Item = &std::io::Error> {
+        pub fn into_errors(self) -> impl Iterator<Item = StreamPoolPollError> {
+            std::iter::once(self.source).chain(self.errors.into_iter())
+        }
+
+        pub fn as_io(&self) -> impl Iterator<Item = &std::io::Error> {
             std::iter::once(&self.source)
                 .chain(self.errors.iter())
                 .map(|e| e.as_io())
                 .filter_map(|e| e)
         }
 
-        pub fn into_errors(self) -> impl Iterator<Item = StreamPoolPollError> {
-            std::iter::once(self.source).chain(self.errors.into_iter())
+        pub fn into_io(self) -> impl Iterator<Item = std::io::Error> {
+            std::iter::once(self.source)
+                .chain(self.errors.into_iter())
+                .map(|e| e.into_io())
+                .filter_map(|e| e)
         }
     }
 
@@ -758,8 +729,8 @@ pub mod errors {
             source: LengthDelimitedCodecError,
             backtrace: Backtrace,
         },
-        #[snafu(display("[StreamPoolPollError] Error in poll_send_filtered"))]
-        PollSendFiltered {
+        #[snafu(display("[StreamPoolPollError] Error in poll_indices"))]
+        PollIndices {
             source: LengthDelimitedCodecError,
             backtrace: Backtrace,
         },
@@ -774,8 +745,16 @@ pub mod errors {
         pub fn as_io(&self) -> Option<&std::io::Error> {
             match self {
                 Self::StartSend { source, .. } => source.as_io(),
-                Self::PollSendFiltered { source, .. } => source.as_io(),
+                Self::PollIndices { source, .. } => source.as_io(),
                 Self::PollSink { source, .. } => source.as_io(),
+            }
+        }
+
+        pub fn into_io(self) -> Option<std::io::Error> {
+            match self {
+                Self::StartSend { source, .. } => source.into_io(),
+                Self::PollIndices { source, .. } => source.into_io(),
+                Self::PollSink { source, .. } => source.into_io(),
             }
         }
     }

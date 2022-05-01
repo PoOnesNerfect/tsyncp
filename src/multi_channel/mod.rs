@@ -9,12 +9,10 @@ use crate::util::{
     split::Split,
 };
 use crate::{broadcast, mpsc};
-use bytes::BytesMut;
 use errors::*;
-use futures::future::poll_fn;
+use futures::Sink;
+use futures::Stream;
 use futures::{ready, Future};
-use futures::{Sink, SinkExt};
-use futures::{Stream, StreamExt};
 use snafu::{ensure, Backtrace, ResultExt};
 use std::fmt;
 use std::io::ErrorKind;
@@ -27,6 +25,7 @@ use tokio::net::TcpListener;
 pub mod accept;
 pub mod builder;
 pub mod recv;
+pub mod send;
 
 #[cfg(feature = "json")]
 pub type JsonChannel<T, const N: usize = 0> = Channel<T, crate::util::codec::JsonCodec, N>;
@@ -239,45 +238,16 @@ where
     L: Accept,
     L::Output: AsyncWrite + Unpin,
 {
-    pub async fn send(&mut self, item: T) -> Result<(), ChannelSinkError<E::Error>> {
-        SinkExt::send(self, item).await
-    }
-
-    pub async fn send_to(
-        &mut self,
-        item: T,
-        addrs: &[SocketAddr],
-    ) -> Result<(), ChannelSinkError<E::Error>> {
-        let encoded = E::encode(&item).context(ItemEncodeSnafu)?;
-
-        self.stream_pool
-            .send_to(encoded, addrs)
-            .await
-            .with_context(|_| SendToSnafu {
-                addrs: addrs.to_vec(),
-            })?;
-
-        Ok(())
-    }
-
-    pub async fn send_filtered<Filter: Fn(&SocketAddr) -> bool>(
-        &mut self,
-        item: T,
-        filter: Filter,
-    ) -> Result<(), ChannelSinkError<E::Error>> {
-        let encoded = E::encode(&item).context(ItemEncodeSnafu)?;
-
-        self.stream_pool
-            .send_filtered(encoded, filter)
-            .await
-            .context(SendFilteredSnafu)?;
-
-        Ok(())
+    pub fn send(&mut self, item: T) -> send::SendFuture<'_, T, E, N, L> {
+        send::SendFuture::new(self, item)
     }
 }
 
-impl<T: Clone, E: EncodeMethod<T>, const N: usize, L: Accept> Sink<T> for Channel<T, E, N, L>
+impl<T, E, const N: usize, L> Sink<T> for Channel<T, E, N, L>
 where
+    T: Clone,
+    L: Accept,
+    E: EncodeMethod<T>,
     L::Output: AsyncWrite + Unpin,
 {
     type Error = ChannelSinkError<E::Error>;
@@ -373,18 +343,6 @@ pub mod errors {
     where
         E: 'static + snafu::Error,
     {
-        pub fn as_io(&self) -> Option<&std::io::Error> {
-            match self {
-                Self::ItemEncode { .. } => None,
-                Self::SendTo { source, .. } => source.as_io(),
-                Self::SendFiltered { source, .. } => source.as_io(),
-                Self::StartSend { source, .. } => source.as_io(),
-                Self::PollReady { source, .. } => source.as_io(),
-                Self::PollFlush { source, .. } => source.as_io(),
-                Self::PollClose { source, .. } => source.as_io(),
-            }
-        }
-
         pub fn errors(&self) -> Option<impl Iterator<Item = &StreamPoolPollError>> {
             match self {
                 Self::ItemEncode { .. } => None,
@@ -397,15 +355,39 @@ pub mod errors {
             }
         }
 
-        pub fn io_errors(&self) -> Option<impl Iterator<Item = &std::io::Error>> {
+        pub fn into_errors(self) -> Option<impl Iterator<Item = StreamPoolPollError>> {
             match self {
                 Self::ItemEncode { .. } => None,
-                Self::SendTo { source, .. } => Some(source.io_errors()),
-                Self::SendFiltered { source, .. } => Some(source.io_errors()),
-                Self::StartSend { source, .. } => Some(source.io_errors()),
-                Self::PollReady { source, .. } => Some(source.io_errors()),
-                Self::PollFlush { source, .. } => Some(source.io_errors()),
-                Self::PollClose { source, .. } => Some(source.io_errors()),
+                Self::SendTo { source, .. } => Some(source.into_errors()),
+                Self::SendFiltered { source, .. } => Some(source.into_errors()),
+                Self::StartSend { source, .. } => Some(source.into_errors()),
+                Self::PollReady { source, .. } => Some(source.into_errors()),
+                Self::PollFlush { source, .. } => Some(source.into_errors()),
+                Self::PollClose { source, .. } => Some(source.into_errors()),
+            }
+        }
+
+        pub fn as_io(&self) -> Option<impl Iterator<Item = &std::io::Error>> {
+            match self {
+                Self::ItemEncode { .. } => None,
+                Self::SendTo { source, .. } => Some(source.as_io()),
+                Self::SendFiltered { source, .. } => Some(source.as_io()),
+                Self::StartSend { source, .. } => Some(source.as_io()),
+                Self::PollReady { source, .. } => Some(source.as_io()),
+                Self::PollFlush { source, .. } => Some(source.as_io()),
+                Self::PollClose { source, .. } => Some(source.as_io()),
+            }
+        }
+
+        pub fn into_io(self) -> Option<impl Iterator<Item = std::io::Error>> {
+            match self {
+                Self::ItemEncode { .. } => None,
+                Self::SendTo { source, .. } => Some(source.into_io()),
+                Self::SendFiltered { source, .. } => Some(source.into_io()),
+                Self::StartSend { source, .. } => Some(source.into_io()),
+                Self::PollReady { source, .. } => Some(source.into_io()),
+                Self::PollFlush { source, .. } => Some(source.into_io()),
+                Self::PollClose { source, .. } => Some(source.into_io()),
             }
         }
     }

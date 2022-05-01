@@ -22,38 +22,16 @@ async fn main() -> Result<()> {
         .retry(Duration::from_millis(500), 100)
         .await?;
 
-    let (receiver, sender) = ch.split();
-    let mut receiver: broadcast::JsonReceiver<Chat> = receiver;
-    let mut sender: mpsc::JsonSender<Chat> = sender;
+    let (mut rx, mut tx) = ch.split();
 
-    let tx_handle = tokio::spawn(async move {
-        let mut name = String::new();
+    let name = get_name()?;
 
-        println!("Enter your name:");
-        io::stdin().read_line(&mut name)?;
-        name = name.trim_end().to_string();
+    println!("\nEntering chatroom...");
+    println!("Say something!");
 
-        println!("\nEntering chatroom...");
-        println!("Say something!");
-
-        let mut buffer = String::new();
-        while let Ok(_) = io::stdin().read_line(&mut buffer) {
-            let chat = Chat {
-                name: name.clone(),
-                body: buffer.trim_end().to_string(),
-            };
-
-            sender.send(chat).await?;
-            buffer.clear();
-        }
-
-        error!("Exiting chatroom due to stdio error");
-
-        Ok::<_, Report>(())
-    });
-
-    let rx_handle = tokio::spawn(async move {
-        while let Some(chat) = receiver.recv().await {
+    // spawn and read chats from server!
+    tokio::spawn(async move {
+        while let Some(chat) = rx.recv().await {
             let chat = chat?;
             println!("{}: {}", chat.name, chat.body);
         }
@@ -61,8 +39,28 @@ async fn main() -> Result<()> {
         Ok::<_, Report>(())
     });
 
-    tx_handle.await??;
-    rx_handle.await??;
+    let mut buffer = String::new();
+
+    while let Ok(_) = io::stdin().read_line(&mut buffer) {
+        let chat = Chat {
+            name: name.clone(),
+            body: buffer.trim_end().to_string(),
+        };
+
+        tx.send(chat).await?;
+        buffer.clear();
+    }
+
+    error!("Exiting chatroom due to stdio error");
 
     Ok(())
+}
+
+fn get_name() -> Result<String> {
+    let mut buffer = String::new();
+
+    println!("Enter your name:");
+    io::stdin().read_line(&mut buffer)?;
+
+    Ok(buffer.trim_end().to_string())
 }

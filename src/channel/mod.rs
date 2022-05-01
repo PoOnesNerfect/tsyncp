@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 
 pub mod builder;
+pub mod recv;
 
 #[cfg(feature = "json")]
 pub type JsonChannel<T> = Channel<T, crate::util::codec::JsonCodec>;
@@ -215,8 +216,8 @@ impl<T: Clone, E: DecodeMethod<T>, S> Channel<T, E, S>
 where
     S: AsyncRead + Unpin,
 {
-    pub async fn recv(&mut self) -> Option<Result<T, ChannelStreamError<E::Error>>> {
-        StreamExt::next(self).await
+    pub fn recv(&mut self) -> recv::RecvFuture<'_, T, E, S> {
+        recv::RecvFuture::new(self)
     }
 }
 
