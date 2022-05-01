@@ -2,10 +2,8 @@ use super::{Barrier, Waiter};
 use crate::util::codec::EmptyCodec;
 use crate::util::{accept::Accept, listener::WriteListener, split::Split};
 use crate::{channel, multi_channel};
-use errors::*;
 use futures::{ready, Future};
 use pin_project::pin_project;
-use snafu::{Backtrace, ResultExt};
 use std::fmt;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::task::Poll;
@@ -164,12 +162,12 @@ where
     Fut: Future<Output = channel::builder::Result<channel::Channel<(), EmptyCodec, S>>>,
     S: Split,
 {
-    type Output = Result<Waiter<S::Left>, WaiterBuilderError>;
+    type Output = Result<Waiter<S::Left>, channel::builder::errors::BuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        let channel = match ready!(this.fut.poll(cx)).context(WaiterBuilderSnafu) {
+        let channel = match ready!(this.fut.poll(cx)) {
             Ok(channel) => channel,
             Err(error) => return Poll::Ready(Err(error)),
         };
@@ -396,39 +394,17 @@ where
     <L::Output as Split>::Left: fmt::Debug,
     <L::Output as Split>::Right: fmt::Debug,
 {
-    type Output = Result<Barrier<N, WriteListener<L>>, BarrierBuilderError>;
+    type Output =
+        Result<Barrier<N, WriteListener<L>>, multi_channel::builder::errors::BuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        let channel = match ready!(this.fut.poll(cx)).context(BarrierBuilderSnafu) {
+        let channel = match ready!(this.fut.poll(cx)) {
             Ok(channel) => channel,
             Err(error) => return Poll::Ready(Err(error)),
         };
 
         Poll::Ready(Ok(Barrier(channel.split().1.into())))
-    }
-}
-
-pub mod errors {
-    use super::*;
-    use snafu::Snafu;
-
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[BarrierBuilderError] Failed building sender"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct BarrierBuilderError {
-        /// source Error
-        source: multi_channel::builder::errors::ChannelBuilderError,
-        backtrace: Backtrace,
-    }
-
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[WaiterBuilderError] Failed building sender"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct WaiterBuilderError {
-        /// source Error
-        source: channel::builder::errors::ChannelBuilderError,
-        backtrace: Backtrace,
     }
 }

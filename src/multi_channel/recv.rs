@@ -1,6 +1,6 @@
 use super::{
     accept::WhileAcceptingFuture,
-    errors::{ChannelStreamError, FrameDecodeSnafu, PollNextSnafu},
+    errors::{ItemDecodeSnafu, StreamError, StreamSnafu},
     Channel,
 };
 use crate::util::{accept::Accept, codec::DecodeMethod};
@@ -69,7 +69,7 @@ where
     E: DecodeMethod<T>,
     L::Output: AsyncRead + Unpin,
 {
-    type Output = Option<Result<T, ChannelStreamError<E::Error>>>;
+    type Output = Option<Result<T, StreamError<E::Error>>>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -133,7 +133,7 @@ where
     E: DecodeMethod<T>,
     L::Output: AsyncRead + Unpin,
 {
-    type Output = Option<Result<(T, SocketAddr), ChannelStreamError<E::Error>>>;
+    type Output = Option<Result<(T, SocketAddr), StreamError<E::Error>>>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -142,12 +142,12 @@ where
         let (frame, addr) = match ready!(self.channel.stream_pool.poll_next_unpin(cx)) {
             Some((Ok(frame), addr)) => (frame, addr),
             Some((Err(error), addr)) => {
-                return Poll::Ready(Some(Err(error).context(PollNextSnafu { addr })))
+                return Poll::Ready(Some(Err(error).context(StreamSnafu { addr })))
             }
             None => return Poll::Ready(None),
         };
 
-        let decoded = E::decode(frame).with_context(|_| FrameDecodeSnafu { addr });
+        let decoded = E::decode(frame).with_context(|_| ItemDecodeSnafu { addr });
 
         Poll::Ready(Some(decoded.map(|d| (d, addr))))
     }
@@ -207,7 +207,7 @@ where
     E: DecodeMethod<T>,
     L::Output: AsyncRead + Unpin,
 {
-    type Output = Option<Result<BytesMut, ChannelStreamError<E::Error>>>;
+    type Output = Option<Result<BytesMut, StreamError<E::Error>>>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -216,7 +216,7 @@ where
         let frame = match ready!(self.channel.stream_pool.poll_next_unpin(cx)) {
             Some((Ok(frame), _)) => frame,
             Some((Err(error), addr)) => {
-                return Poll::Ready(Some(Err(error).context(PollNextSnafu { addr })))
+                return Poll::Ready(Some(Err(error).context(StreamSnafu { addr })))
             }
             None => return Poll::Ready(None),
         };
@@ -277,7 +277,7 @@ where
     E: DecodeMethod<T>,
     L::Output: AsyncRead + Unpin,
 {
-    type Output = Option<Result<(BytesMut, SocketAddr), ChannelStreamError<E::Error>>>;
+    type Output = Option<Result<(BytesMut, SocketAddr), StreamError<E::Error>>>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -286,7 +286,7 @@ where
         let (frame, addr) = match ready!(self.channel.stream_pool.poll_next_unpin(cx)) {
             Some((Ok(frame), addr)) => (frame, addr),
             Some((Err(error), addr)) => {
-                return Poll::Ready(Some(Err(error).context(PollNextSnafu { addr })))
+                return Poll::Ready(Some(Err(error).context(StreamSnafu { addr })))
             }
             None => return Poll::Ready(None),
         };

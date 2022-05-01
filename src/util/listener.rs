@@ -87,9 +87,7 @@ where
     ) -> Poll<
         Result<(<<L as Accept>::Output as Split>::Left, SocketAddr), SplitAcceptError<L::Error>>,
     > {
-        let mut r_ret = self.r_ret.lock().map_err(|_| SplitAcceptError::RMutex {
-            backtrace: Backtrace::new(),
-        })?;
+        let mut r_ret = self.r_ret.lock().map_err(|_| RMutexSnafu.build())?;
 
         if !r_ret.0.is_empty() {
             return Poll::Ready(Ok(r_ret.0.pop_front().expect("element exists!")));
@@ -134,9 +132,7 @@ where
     ) -> Poll<
         Result<(<<L as Accept>::Output as Split>::Right, SocketAddr), SplitAcceptError<L::Error>>,
     > {
-        let mut w_ret = self.w_ret.lock().map_err(|_| SplitAcceptError::RMutex {
-            backtrace: Backtrace::new(),
-        })?;
+        let mut w_ret = self.w_ret.lock().map_err(|_| RMutexSnafu.build())?;
 
         if !w_ret.0.is_empty() {
             return Poll::Ready(Ok(w_ret.0.pop_front().expect("element exists!")));
@@ -256,7 +252,7 @@ where
 {
     type Left = ReadListener<L>;
     type Right = WriteListener<L>;
-    type Error = UnsplitListenerError;
+    type Error = UnsplitError;
 
     fn split(self) -> (Self::Left, Self::Right) {
         let a = Arc::new(self);
@@ -309,10 +305,12 @@ pub mod errors {
 
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
-    pub enum UnsplitListenerError {
-        #[snafu(display("[UnsplitListenerError] Failed try_unwrap on Arc reference of Listener"))]
+    pub enum UnsplitError {
+        #[snafu(display("[UnsplitError] Failed try_unwrap on Arc reference of Listener"))]
         TryUnwrap { backtrace: Backtrace },
-        #[snafu(display("[UnsplitListenerError] Given Arc pointers in unsplit are not the same"))]
+        #[snafu(display(
+            "[UnsplitError] Provided Arc pointers in unsplit are not the same"
+        ))]
         ArcPtrUnequal { backtrace: Backtrace },
     }
 }

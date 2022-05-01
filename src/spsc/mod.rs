@@ -1,16 +1,9 @@
 use crate::channel;
 use crate::util::codec::{DecodeMethod, EncodeMethod};
 use crate::util::tcp;
-// use crate::{broadcast, channel, mpsc};
-use errors::*;
-use futures::Sink;
-use futures::Stream;
-use futures::{ready, StreamExt};
-use futures::{Future, SinkExt};
-use snafu::{Backtrace, ResultExt};
+use futures::Future;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
-use std::task::Poll;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub mod builder;
@@ -112,53 +105,8 @@ where
     E: EncodeMethod<T>,
     S: AsyncWrite + Unpin,
 {
-    pub async fn send(&mut self, item: T) -> Result<(), SenderError<E::Error>> {
-        SinkExt::send(self, item).await
-    }
-}
-
-impl<T, E, S> Sink<T> for Sender<T, E, S>
-where
-    E: EncodeMethod<T>,
-    S: AsyncWrite + Unpin,
-{
-    type Error = SenderError<E::Error>;
-
-    fn start_send(self: std::pin::Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
-        self.project().0.start_send(item).context(SenderSnafu)
-    }
-
-    fn poll_ready(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        if let Err(e) = ready!(self.project().0.poll_ready(cx)) {
-            return Poll::Ready(Err(e).context(SenderSnafu));
-        }
-
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        if let Err(e) = ready!(self.project().0.poll_flush(cx)) {
-            return Poll::Ready(Err(e).context(SenderSnafu));
-        }
-
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_close(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        if let Err(e) = ready!(self.project().0.poll_close(cx)) {
-            return Poll::Ready(Err(e).context(SenderSnafu));
-        }
-
-        Poll::Ready(Ok(()))
+    pub async fn send(&mut self, item: T) -> Result<(), channel::errors::SinkError<E::Error>> {
+        self.0.send(item).await
     }
 }
 
@@ -193,53 +141,7 @@ where
     E: DecodeMethod<T>,
     S: AsyncRead + Unpin,
 {
-    pub async fn recv(&mut self) -> Option<Result<T, ReceiverError<E::Error>>> {
-        self.next().await
-    }
-}
-
-impl<T, E, S> Stream for Receiver<T, E, S>
-where
-    E: DecodeMethod<T>,
-    S: AsyncRead + Unpin,
-{
-    type Item = Result<T, ReceiverError<E::Error>>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        match ready!(self.project().0.poll_next(cx)) {
-            Some(Ok(item)) => Poll::Ready(Some(Ok(item))),
-            Some(Err(e)) => Poll::Ready(Some(Err(e).context(ReceiverSnafu))),
-            None => Poll::Ready(None),
-        }
-    }
-}
-
-pub mod errors {
-    use super::*;
-    use snafu::Snafu;
-
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[spsc::SenderError] Failed to send item"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct SenderError<E>
-    where
-        E: 'static + snafu::Error,
-    {
-        source: channel::errors::ChannelSinkError<E>,
-        backtrace: Backtrace,
-    }
-
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[spsc::ReceiverError] Failed to receiver item"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct ReceiverError<E>
-    where
-        E: 'static + snafu::Error,
-    {
-        source: channel::errors::ChannelStreamError<E>,
-        backtrace: Backtrace,
+    pub fn recv(&mut self) -> channel::recv::RecvFuture<'_, T, E, S> {
+        self.0.recv()
     }
 }

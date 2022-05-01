@@ -1,13 +1,12 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use errors::*;
-use std::io;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{Decoder, Encoder, Framed};
 
 /// default MAX_FRAME_LENGTH for codec
 pub const MAX_FRAME_LENGTH: usize = 8 * 1024 * 1024;
 
-type Result<T, E = LengthDelimitedCodecError> = std::result::Result<T, E>;
+type Result<T, E = CodecError> = std::result::Result<T, E>;
 
 /// Length delimited bytes-to-frame encoding/decoding scheme that uses first n bits to represent header bytes' length. (1 <= n <= 3)
 ///
@@ -186,10 +185,11 @@ impl VariedLengthDelimitedCodec {
         let payload_len = src.get_uint(header_len) as usize;
 
         if payload_len > self.max_frame_length {
-            return Err(LengthDelimitedCodecError::InvalidDecodingFrameLength {
+            return InvalidDecodingFrameLengthSnafu {
                 len: payload_len,
                 max_frame_length: self.max_frame_length,
-            });
+            }
+            .fail();
         }
 
         // Ensure that the buffer has enough space to read the incoming payload
@@ -211,7 +211,7 @@ impl VariedLengthDelimitedCodec {
 
 impl Decoder for VariedLengthDelimitedCodec {
     type Item = BytesMut;
-    type Error = LengthDelimitedCodecError;
+    type Error = CodecError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>> {
         let payload_len = match self.state {
@@ -241,16 +241,17 @@ impl Decoder for VariedLengthDelimitedCodec {
 }
 
 impl Encoder<Bytes> for VariedLengthDelimitedCodec {
-    type Error = LengthDelimitedCodecError;
+    type Error = CodecError;
 
     fn encode(&mut self, data: Bytes, dst: &mut BytesMut) -> Result<()> {
         let payload_len = data.len();
 
         if payload_len > self.max_frame_length {
-            return Err(LengthDelimitedCodecError::InvalidEncodingFrameLength {
+            return InvalidEncodingFrameLengthSnafu {
                 len: payload_len,
                 max_frame_length: self.max_frame_length,
-            });
+            }
+            .fail();
         }
 
         // single byte max length
@@ -276,14 +277,14 @@ impl Encoder<Bytes> for VariedLengthDelimitedCodec {
 }
 
 pub mod errors {
-    use super::*;
-    use snafu::Snafu;
+    use snafu::{Backtrace, GenerateImplicitData, Snafu};
+    use std::io;
 
     /// Codec's error type
     /// TODO: separate error types to `EncodeError` and `DecodeError`
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
-    pub enum LengthDelimitedCodecError {
+    pub enum CodecError {
         /// Invalid length in frame header was received while decoding frame.
         #[snafu(display("Received invalid frame length {len} while decoding; bytes' length must be greater 0 and less than {max_frame_length}"))]
         InvalidDecodingFrameLength {
@@ -291,6 +292,7 @@ pub mod errors {
             len: usize,
             /// max frame length
             max_frame_length: usize,
+            backtrace: Backtrace,
         },
         /// Invalid length in frame header was received while encoding frame.
         #[snafu(display("Received invalid frame length {len} while encoding; bytes' length must be greater 0 and less than {max_frame_length}"))]
@@ -299,24 +301,29 @@ pub mod errors {
             len: usize,
             /// max frame length
             max_frame_length: usize,
+            backtrace: Backtrace,
         },
         /// returned from invalid inner IO Error
         #[snafu(display("Encountered IO Error while decoding frame"))]
         IoError {
             /// source IO Error
             source: io::Error,
+            backtrace: Backtrace,
         },
     }
 
-    impl From<io::Error> for LengthDelimitedCodecError {
+    impl From<io::Error> for CodecError {
         fn from(src: io::Error) -> Self {
-            Self::IoError { source: src }
+            Self::IoError {
+                source: src,
+                backtrace: Backtrace::generate(),
+            }
         }
     }
 
-    impl LengthDelimitedCodecError {
+    impl CodecError {
         pub fn as_io(&self) -> Option<&io::Error> {
-            if let Self::IoError { source } = self {
+            if let Self::IoError { source, .. } = self {
                 return Some(source);
             }
 
@@ -324,11 +331,41 @@ pub mod errors {
         }
 
         pub fn into_io(self) -> Option<io::Error> {
-            if let Self::IoError { source } = self {
+            if let Self::IoError { source, .. } = self {
                 return Some(source);
             }
 
             None
+        }
+
+        pub fn is_connection_reset(&self) -> bool {
+            self.as_io()
+                .map(|e| e.kind() == io::ErrorKind::ConnectionReset)
+                .unwrap_or_default()
+        }
+
+        pub fn is_connection_refused(&self) -> bool {
+            self.as_io()
+                .map(|e| e.kind() == io::ErrorKind::ConnectionRefused)
+                .unwrap_or_default()
+        }
+
+        pub fn is_connection_aborted(&self) -> bool {
+            self.as_io()
+                .map(|e| e.kind() == io::ErrorKind::ConnectionAborted)
+                .unwrap_or_default()
+        }
+
+        pub fn is_not_connected(&self) -> bool {
+            self.as_io()
+                .map(|e| e.kind() == io::ErrorKind::NotConnected)
+                .unwrap_or_default()
+        }
+
+        pub fn is_broken_pipe(&self) -> bool {
+            self.as_io()
+                .map(|e| e.kind() == io::ErrorKind::BrokenPipe)
+                .unwrap_or_default()
         }
     }
 }

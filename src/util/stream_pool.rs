@@ -1,13 +1,12 @@
-use super::frame_codec::{errors::LengthDelimitedCodecError, VariedLengthDelimitedCodec};
-use super::split::{errors::SplitError, Split};
+use super::frame_codec::{self, VariedLengthDelimitedCodec};
+use super::split::Split;
 use super::Framed;
 use bytes::{Bytes, BytesMut};
 use errors::*;
-use futures::future::poll_fn;
 use futures::{ready, SinkExt, StreamExt};
 use futures::{sink::Sink, stream::Stream};
 use pin_project::pin_project;
-use snafu::{ensure, Backtrace, ResultExt};
+use snafu::{ensure, ResultExt};
 use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::task::Poll;
@@ -22,7 +21,7 @@ pub struct StreamPool<S, const N: usize = 0> {
     // Used for keeping track of current polling stream/sink stream index.
     // Since stream/sink never happens at the same time, it's safe to use the same field for both.
     index: usize,
-    sink_errors: Vec<StreamPoolPollError>,
+    sink_errors: Vec<PollError>,
 }
 
 #[derive(Debug)]
@@ -53,7 +52,7 @@ where
 {
     type Left = StreamPool<S::Left, N>;
     type Right = StreamPool<S::Right, N>;
-    type Error = StreamPoolSplitError<S::Error>;
+    type Error = UnsplitError<S::Error>;
 
     fn split(mut self) -> (Self::Left, Self::Right) {
         let is_array = self.is_array();
@@ -255,7 +254,7 @@ impl<S, const N: usize> StreamPool<S, N> {
         match &mut self.pool {
             Pool::Array { streams, len, .. } => {
                 if *len == N {
-                    return Err(StreamPoolError::AddStreamLimitReached { limit: N });
+                    return AddStreamLimitReachedSnafu { limit: N }.fail();
                 }
 
                 streams[*len].write((stream, addr));
@@ -264,7 +263,7 @@ impl<S, const N: usize> StreamPool<S, N> {
             Pool::Vec { streams, limit, .. } => {
                 if let Some(limit) = limit {
                     if streams.len() == *limit {
-                        return Err(StreamPoolError::AddStreamLimitReached { limit: *limit });
+                        return AddStreamLimitReachedSnafu { limit: *limit }.fail();
                     }
                 }
 
@@ -346,16 +345,12 @@ impl<S, const N: usize> StreamPool<S, N> {
         }
     }
 
-    pub(crate) fn drain_sink_res(&mut self) -> Result<(), StreamPoolSinkError> {
+    pub(crate) fn drain_sink_res(&mut self) -> Result<(), SinkError> {
         let mut errors = self.sink_errors.drain(..);
 
         // have first error as source
         if let Some(source) = errors.next() {
-            return Err(StreamPoolSinkError::new(
-                errors.collect(),
-                source,
-                Backtrace::new(),
-            ));
+            return Err(SinkError::new(errors.collect(), source));
         } else {
             Ok(())
         }
@@ -380,7 +375,7 @@ impl<S, const N: usize> StreamPool<S, N> {
 // Pass different wakers into different streams when polling, so we know which stream we can poll
 // when it's called, instead of round-robin polling all streams.
 impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
-    type Item = (Result<BytesMut>, SocketAddr);
+    type Item = (Result<BytesMut, PollError>, SocketAddr);
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
@@ -499,7 +494,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
 
     fn poll_indices<F>(&mut self, indices: &mut Vec<usize>, mut f: F) -> Poll<()>
     where
-        F: FnMut(&mut Framed<S>) -> Poll<Result<(), LengthDelimitedCodecError>>,
+        F: FnMut(&mut Framed<S>) -> Poll<Result<(), frame_codec::errors::CodecError>>,
     {
         // Go in reverse order,
         // so that, when we encounter an error,
@@ -519,9 +514,9 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
     }
 
     // poll on all streams in the pool, while skipping the ones that already returned ready.
-    fn poll_all<F>(&mut self, mut f: F) -> Poll<Result<(), StreamPoolSinkError>>
+    fn poll_all<F>(&mut self, mut f: F) -> Poll<Result<(), SinkError>>
     where
-        F: FnMut(&mut Framed<S>) -> Poll<Result<(), LengthDelimitedCodecError>>,
+        F: FnMut(&mut Framed<S>) -> Poll<Result<(), frame_codec::errors::CodecError>>,
     {
         let mut len = self.len();
 
@@ -565,7 +560,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
 }
 
 impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
-    type Error = StreamPoolSinkError;
+    type Error = SinkError;
 
     fn poll_ready(
         mut self: std::pin::Pin<&mut Self>,
@@ -632,8 +627,9 @@ impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
 }
 
 pub mod errors {
-    use super::*;
-    use snafu::Snafu;
+    use crate::util::frame_codec;
+    use snafu::{Backtrace, GenerateImplicitData, Snafu};
+    use std::io;
 
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
@@ -641,67 +637,43 @@ pub mod errors {
         #[snafu(display(
             "[StreamPoolError] Cannot add stream to pool as limit {limit} is already reached."
         ))]
-        AddStreamLimitReached { limit: usize },
-        #[snafu(display("[StreamPoolError] Failed poll_next"))]
-        PollNext {
-            source: LengthDelimitedCodecError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[StreamPoolError] Failed to split underlying stream"))]
-        Split {
-            source: SplitError,
-            backtrace: Backtrace,
-        },
-    }
-
-    impl StreamPoolError {
-        pub fn as_io(&self) -> Option<&std::io::Error> {
-            if let Self::PollNext { source, .. } = self {
-                return source.as_io();
-            }
-
-            None
-        }
+        AddStreamLimitReached { limit: usize, backtrace: Backtrace },
     }
 
     #[derive(Debug, Snafu)]
-    #[snafu(display("[StreamPoolSinkError] Failed to send item"))]
+    #[snafu(display("[SinkError] Failed to send item in stream_pool"))]
     #[snafu(visibility(pub(super)))]
-    pub struct StreamPoolSinkError {
-        errors: Vec<StreamPoolPollError>,
-        source: StreamPoolPollError,
+    pub struct SinkError {
+        errors: Vec<PollError>,
+        source: PollError,
         backtrace: Backtrace,
     }
 
-    impl StreamPoolSinkError {
-        pub fn new(
-            errors: Vec<StreamPoolPollError>,
-            source: StreamPoolPollError,
-            backtrace: Backtrace,
-        ) -> Self {
+    impl SinkError {
+        pub fn new(errors: Vec<PollError>, source: PollError) -> Self {
             Self {
                 errors,
                 source,
-                backtrace,
+                backtrace: Backtrace::generate(),
             }
         }
 
-        pub fn errors(&self) -> impl Iterator<Item = &StreamPoolPollError> {
+        pub fn as_errors(&self) -> impl Iterator<Item = &PollError> {
             std::iter::once(&self.source).chain(self.errors.iter())
         }
 
-        pub fn into_errors(self) -> impl Iterator<Item = StreamPoolPollError> {
+        pub fn into_errors(self) -> impl Iterator<Item = PollError> {
             std::iter::once(self.source).chain(self.errors.into_iter())
         }
 
-        pub fn as_io(&self) -> impl Iterator<Item = &std::io::Error> {
+        pub fn as_io_errors(&self) -> impl Iterator<Item = &std::io::Error> {
             std::iter::once(&self.source)
                 .chain(self.errors.iter())
                 .map(|e| e.as_io())
                 .filter_map(|e| e)
         }
 
-        pub fn into_io(self) -> impl Iterator<Item = std::io::Error> {
+        pub fn into_io_errors(self) -> impl Iterator<Item = std::io::Error> {
             std::iter::once(self.source)
                 .chain(self.errors.into_iter())
                 .map(|e| e.into_io())
@@ -711,42 +683,48 @@ pub mod errors {
 
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
-    pub enum StreamPoolSplitError<E>
+    pub enum UnsplitError<E>
     where
         E: 'static + snafu::Error,
     {
-        #[snafu(display("[StreamPoolSplitError] Failed to unsplit underlying stream; read half and write half were not equal"))]
-        RWUnequal,
-        #[snafu(display("[StreamPoolSplitError] Failed to unsplit underlying stream"))]
+        #[snafu(display("[UnsplitError] Failed to unsplit underlying stream; read half and write half were not equal"))]
+        RWUnequal { backtrace: Backtrace },
+        #[snafu(display("[UnsplitError] Failed to unsplit underlying stream"))]
         Unsplit { source: E, backtrace: Backtrace },
     }
 
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
-    pub enum StreamPoolPollError {
-        #[snafu(display("[StreamPoolPollError] Error in start_send"))]
+    pub enum PollError {
+        #[snafu(display("[PollError] Error in start_send"))]
         StartSend {
-            source: LengthDelimitedCodecError,
+            source: frame_codec::errors::CodecError,
             backtrace: Backtrace,
         },
-        #[snafu(display("[StreamPoolPollError] Error in poll_indices"))]
+        #[snafu(display("[PollError] Error in poll_indices"))]
         PollIndices {
-            source: LengthDelimitedCodecError,
+            source: frame_codec::errors::CodecError,
             backtrace: Backtrace,
         },
-        #[snafu(display("[StreamPoolPollError] Error in poll_all"))]
+        #[snafu(display("[PollError] Error in poll_all"))]
         PollSink {
-            source: LengthDelimitedCodecError,
+            source: frame_codec::errors::CodecError,
+            backtrace: Backtrace,
+        },
+        #[snafu(display("[StreamPoolError] Failed poll_next in stream_pool"))]
+        PollNext {
+            source: frame_codec::errors::CodecError,
             backtrace: Backtrace,
         },
     }
 
-    impl StreamPoolPollError {
+    impl PollError {
         pub fn as_io(&self) -> Option<&std::io::Error> {
             match self {
                 Self::StartSend { source, .. } => source.as_io(),
                 Self::PollIndices { source, .. } => source.as_io(),
                 Self::PollSink { source, .. } => source.as_io(),
+                Self::PollNext { source, .. } => source.as_io(),
             }
         }
 
@@ -755,7 +733,38 @@ pub mod errors {
                 Self::StartSend { source, .. } => source.into_io(),
                 Self::PollIndices { source, .. } => source.into_io(),
                 Self::PollSink { source, .. } => source.into_io(),
+                Self::PollNext { source, .. } => source.into_io(),
             }
+        }
+
+        pub fn is_connection_reset(&self) -> bool {
+            self.as_io()
+                .map(|e| e.kind() == io::ErrorKind::ConnectionReset)
+                .unwrap_or_default()
+        }
+
+        pub fn is_connection_refused(&self) -> bool {
+            self.as_io()
+                .map(|e| e.kind() == io::ErrorKind::ConnectionRefused)
+                .unwrap_or_default()
+        }
+
+        pub fn is_connection_aborted(&self) -> bool {
+            self.as_io()
+                .map(|e| e.kind() == io::ErrorKind::ConnectionAborted)
+                .unwrap_or_default()
+        }
+
+        pub fn is_not_connected(&self) -> bool {
+            self.as_io()
+                .map(|e| e.kind() == io::ErrorKind::NotConnected)
+                .unwrap_or_default()
+        }
+
+        pub fn is_broken_pipe(&self) -> bool {
+            self.as_io()
+                .map(|e| e.kind() == io::ErrorKind::BrokenPipe)
+                .unwrap_or_default()
         }
     }
 }

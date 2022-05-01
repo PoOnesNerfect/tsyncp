@@ -1,5 +1,5 @@
 use super::{
-    errors::{ChannelStreamError, PollReadSnafu},
+    errors::{FrameDecodeSnafu, PollNextSnafu, StreamError},
     Channel,
 };
 use crate::util::codec::DecodeMethod;
@@ -43,13 +43,21 @@ where
     E: DecodeMethod<T>,
     S: AsyncRead + Unpin,
 {
-    type Output = Option<Result<T, ChannelStreamError<E::Error>>>;
+    type Output = Option<Result<T, StreamError<E::Error>>>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        self.channel.poll_next_unpin(cx)
+        let frame = match ready!(self.channel.framed.poll_next_unpin(cx)) {
+            Some(Ok(frame)) => frame,
+            Some(Err(error)) => return Poll::Ready(Some(Err(error).context(PollNextSnafu))),
+            None => return Poll::Ready(None),
+        };
+
+        let decoded = E::decode(frame).context(FrameDecodeSnafu);
+
+        Poll::Ready(Some(decoded))
     }
 }
 
@@ -82,7 +90,7 @@ where
     E: DecodeMethod<T>,
     S: AsyncRead + Unpin,
 {
-    type Output = Option<Result<BytesMut, ChannelStreamError<E::Error>>>;
+    type Output = Option<Result<BytesMut, StreamError<E::Error>>>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -90,7 +98,7 @@ where
     ) -> std::task::Poll<Self::Output> {
         let frame = match ready!(self.channel.framed.poll_next_unpin(cx)) {
             Some(Ok(frame)) => frame,
-            Some(Err(error)) => return Poll::Ready(Some(Err(error).context(PollReadSnafu))),
+            Some(Err(error)) => return Poll::Ready(Some(Err(error).context(PollNextSnafu))),
             None => return Poll::Ready(None),
         };
 

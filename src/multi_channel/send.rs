@@ -1,6 +1,6 @@
 use super::{
     accept::WhileAcceptingFuture,
-    errors::{ChannelSinkError, ItemEncodeSnafu, SendFilteredSnafu},
+    errors::{ItemEncodeSnafu, SinkError, SinkSnafu},
     Channel,
 };
 use crate::util::{accept::Accept, codec::EncodeMethod};
@@ -122,7 +122,7 @@ where
     E: EncodeMethod<T>,
     L::Output: AsyncWrite + Unpin,
 {
-    type Output = Result<(), ChannelSinkError<E::Error>>;
+    type Output = Result<(), SinkError<E::Error>>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -235,7 +235,7 @@ where
     L::Output: AsyncWrite + Unpin,
     F: Fn(SocketAddr) -> bool,
 {
-    type Output = Result<(), ChannelSinkError<E::Error>>;
+    type Output = Result<(), SinkError<E::Error>>;
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
@@ -261,7 +261,9 @@ where
                         .take()
                         .expect("taking item should only be called once");
 
-                    let encoded = E::encode(&item).context(ItemEncodeSnafu)?;
+                    let encoded = E::encode(&item).with_context(|_| ItemEncodeSnafu {
+                        addr: *this.channel.local_addr(),
+                    })?;
 
                     this.channel
                         .stream_pool
@@ -289,7 +291,9 @@ where
                             this.channel
                                 .stream_pool
                                 .drain_sink_res()
-                                .context(SendFilteredSnafu),
+                                .with_context(|_| SinkSnafu {
+                                    addr: *this.channel.local_addr(),
+                                }),
                         );
                     }
 
@@ -304,7 +308,9 @@ where
             this.channel
                 .stream_pool
                 .drain_sink_res()
-                .context(SendFilteredSnafu),
+                .with_context(|_| SinkSnafu {
+                    addr: *this.channel.local_addr(),
+                }),
         )
     }
 }

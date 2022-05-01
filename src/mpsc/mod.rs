@@ -8,14 +8,8 @@ use crate::{
         tcp,
     },
 };
-use bytes::BytesMut;
-use errors::*;
-use futures::{ready, Future, Sink, SinkExt, Stream, StreamExt};
-use snafu::{Backtrace, ResultExt};
-use std::{
-    net::{SocketAddr, ToSocketAddrs},
-    task::Poll,
-};
+use futures::Future;
+use std::net::{SocketAddr, ToSocketAddrs};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpListener,
@@ -97,53 +91,8 @@ where
     E: EncodeMethod<T>,
     S: AsyncWrite + Unpin,
 {
-    pub async fn send(&mut self, item: T) -> Result<(), SenderError<E::Error>> {
-        SinkExt::send(self, item).await
-    }
-}
-
-impl<T, E, S> Sink<T> for Sender<T, E, S>
-where
-    E: EncodeMethod<T>,
-    S: AsyncWrite + Unpin,
-{
-    type Error = SenderError<E::Error>;
-
-    fn start_send(self: std::pin::Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
-        self.project().0.start_send(item).context(SenderSnafu)
-    }
-
-    fn poll_ready(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        if let Err(e) = ready!(self.project().0.poll_ready(cx)) {
-            return Poll::Ready(Err(e).context(SenderSnafu));
-        }
-
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        if let Err(e) = ready!(self.project().0.poll_flush(cx)) {
-            return Poll::Ready(Err(e).context(SenderSnafu));
-        }
-
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_close(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), Self::Error>> {
-        if let Err(e) = ready!(self.project().0.poll_close(cx)) {
-            return Poll::Ready(Err(e).context(SenderSnafu));
-        }
-
-        Poll::Ready(Ok(()))
+    pub async fn send(&mut self, item: T) -> Result<(), channel::errors::SinkError<E::Error>> {
+        self.0.send(item).await
     }
 }
 
@@ -210,69 +159,5 @@ where
 {
     pub fn recv(&mut self) -> RecvFuture<'_, T, E, N, L> {
         self.0.recv()
-    }
-}
-
-impl<T, E, const N: usize, L> Stream for Receiver<T, E, N, L>
-where
-    E: DecodeMethod<T>,
-    L: Accept,
-    L::Output: AsyncRead + Unpin,
-{
-    type Item = Result<T, ReceiverError<E::Error>>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        match ready!(self.project().0.poll_next(cx)) {
-            Some(Ok(item)) => Poll::Ready(Some(Ok(item))),
-            Some(Err(e)) => Poll::Ready(Some(Err(e).context(ReceiverSnafu))),
-            None => Poll::Ready(None),
-        }
-    }
-}
-
-pub mod errors {
-    use super::*;
-    use snafu::Snafu;
-
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[mpsc::ReceiverAcceptingError] Failed to accept stream"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct ReceiverAcceptingError<E: 'static + snafu::Error> {
-        source: multi_channel::errors::AcceptingError<E>,
-        backtrace: Backtrace,
-    }
-
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[mpsc::SenderError] Failed to send item"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct SenderError<E>
-    where
-        E: 'static + snafu::Error,
-    {
-        source: channel::errors::ChannelSinkError<E>,
-        backtrace: Backtrace,
-    }
-
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[mpsc::ReceiverError] Failed to receiver item on mpsc::Receiver"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct ReceiverError<E>
-    where
-        E: 'static + snafu::Error,
-    {
-        source: multi_channel::errors::ChannelStreamError<E>,
-        backtrace: Backtrace,
-    }
-
-    impl<E> ReceiverError<E>
-    where
-        E: 'static + snafu::Error,
-    {
-        pub fn addr(&self) -> &SocketAddr {
-            self.source.addr()
-        }
     }
 }

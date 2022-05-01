@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task::JoinError;
 
-pub type Result<T, E = ChannelBuilderError> = std::result::Result<T, E>;
+pub type Result<T, E = BuilderError> = std::result::Result<T, E>;
 
 pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
     local_addr: A,
@@ -393,95 +393,79 @@ pub mod errors {
 
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
-    pub enum ChannelBuilderError {
-        /// Invalid length in frame header was received while decoding frame.
-        #[snafu(display("[ChannelBuilderError] Received invalid frame length {len} while decoding; bytes' length must be greater 0 and less than {max_frame_length}"))]
-        InvalidDecodingFrameLength {
-            /// given invalid frame length
-            len: usize,
-            /// max frame length
-            max_frame_length: usize,
-        },
-        /// Invalid length in frame header was received while encoding frame.
-        #[snafu(display("[ChannelBuilderError] Received invalid frame length {len} while encoding; bytes' length must be greater 0 and less than {max_frame_length}"))]
-        InvalidEncodingFrameLength {
-            /// given invalid frame length
-            len: usize,
-            /// max frame length
-            max_frame_length: usize,
-        },
-        #[snafu(display("[ChannelBuilderError] Encountered unexpected error on spawned task for converting to socket addr"))]
+    pub enum BuilderError {
+        #[snafu(display("[BuilderError] Encountered unexpected error on spawned task for converting to socket addr"))]
         SpawnJoin {
             /// source Error
             source: JoinError,
             backtrace: Backtrace,
         },
-        #[snafu(display("[ChannelBuilderError] Failed to convert input to socket address"))]
+        #[snafu(display("[BuilderError] Failed to convert input to socket address"))]
         ToSocketAddrs {
             /// source IO Error
             source: io::Error,
             backtrace: Backtrace,
         },
-        #[snafu(display("[ChannelBuilderError] No addresses found"))]
+        #[snafu(display("[BuilderError] No addresses found"))]
         NoAddrFound { backtrace: Backtrace },
-        #[snafu(display("[ChannelBuilderError] Failed to set reuseaddr for {addr}"))]
+        #[snafu(display("[BuilderError] Failed to set reuseaddr for {addr}"))]
         SetReuseAddr {
             addr: SocketAddr,
             /// source IO Error
             source: io::Error,
             backtrace: Backtrace,
         },
-        #[snafu(display("[ChannelBuilderError] Failed to set reuseport for {addr}"))]
+        #[snafu(display("[BuilderError] Failed to set reuseport for {addr}"))]
         SetReusePort {
             addr: SocketAddr,
             /// source IO Error
             source: io::Error,
             backtrace: Backtrace,
         },
-        #[snafu(display("[ChannelBuilderError] Failed to set linger for {addr}"))]
+        #[snafu(display("[BuilderError] Failed to set linger for {addr}"))]
         SetLinger {
             addr: SocketAddr,
             /// source IO Error
             source: io::Error,
             backtrace: Backtrace,
         },
-        #[snafu(display("[ChannelBuilderError] Failed to set recv_buffer_size for {addr}"))]
+        #[snafu(display("[BuilderError] Failed to set recv_buffer_size for {addr}"))]
         SetRecvBufferSize {
             addr: SocketAddr,
             /// source IO Error
             source: io::Error,
             backtrace: Backtrace,
         },
-        #[snafu(display("[ChannelBuilderError] Failed to set send_buffer_size for {addr}"))]
+        #[snafu(display("[BuilderError] Failed to set send_buffer_size for {addr}"))]
         SetSendBufferSize {
             addr: SocketAddr,
             /// source IO Error
             source: io::Error,
             backtrace: Backtrace,
         },
-        #[snafu(display("[ChannelBuilderError] Failed to set nodelay for {addr}"))]
+        #[snafu(display("[BuilderError] Failed to set nodelay for {addr}"))]
         SetNodelay {
             addr: SocketAddr,
             /// source IO Error
             source: io::Error,
             backtrace: Backtrace,
         },
-        #[snafu(display("[ChannelBuilderError] Failed to set ttl for {addr}"))]
+        #[snafu(display("[BuilderError] Failed to set ttl for {addr}"))]
         SetTtl {
             addr: SocketAddr,
             /// source IO Error
             source: io::Error,
             backtrace: Backtrace,
         },
-        #[snafu(display("[ChannelBuilderError] Failed to create Tcp Socket for {addr}"))]
-        NewSocketError {
+        #[snafu(display("[BuilderError] Failed to create Tcp Socket for {addr}"))]
+        NewSocket {
             addr: SocketAddr,
             /// source IO Error
             source: io::Error,
             backtrace: Backtrace,
         },
         /// returned from invalid inner IO Error
-        #[snafu(display("[ChannelBuilderError] Failed to bind on {addr}"))]
+        #[snafu(display("[BuilderError] Failed to bind on {addr}"))]
         Binding {
             addr: SocketAddr,
             /// source IO Error
@@ -489,7 +473,7 @@ pub mod errors {
             backtrace: Backtrace,
         },
         /// returned from invalid inner IO Error
-        #[snafu(display("[ChannelBuilderError] Failed to listen on {addr}"))]
+        #[snafu(display("[BuilderError] Failed to listen on {addr}"))]
         Listening {
             addr: SocketAddr,
             /// source IO Error
@@ -498,7 +482,7 @@ pub mod errors {
         },
         /// returned from invalid inner IO Error
         #[snafu(display(
-            "[ChannelBuilderError] Encountered IO Error while accepting connections on {addr}"
+            "[BuilderError] Encountered IO Error while accepting connections on {addr}"
         ))]
         Accepting {
             addr: SocketAddr,
@@ -506,7 +490,7 @@ pub mod errors {
             source: io::Error,
             backtrace: Backtrace,
         },
-        #[snafu(display("[ChannelBuilderError] Failed to get local addr for listener on {addr}"))]
+        #[snafu(display("[BuilderError] Failed to get local addr for listener on {addr}"))]
         LocalAddr {
             addr: SocketAddr,
             source: io::Error,

@@ -73,16 +73,3 @@ impl<S: Split> Split for Framed<S> {
         Ok(Framed::from_parts(rw))
     }
 }
-
-pub mod errors {
-    use snafu::Snafu;
-
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum SplitError {
-        #[snafu(display("[SplitError] Cannot split if a variant is not RWSplit::RW"))]
-        Split,
-        #[snafu(display("[SplitError] Cannot unsplit; Left variant must be RWSplit::R, and right variant must be RWSplit::W"))]
-        Unsplit,
-    }
-}

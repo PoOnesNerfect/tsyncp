@@ -1,10 +1,8 @@
 use super::{Receiver, Sender};
 use crate::channel;
 use crate::util::split::Split;
-use errors::*;
 use futures::{ready, Future};
 use pin_project::pin_project;
-use snafu::{Backtrace, ResultExt};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::task::Poll;
 use std::time::Duration;
@@ -210,12 +208,12 @@ where
     S: Split,
     Fut: Future<Output = channel::builder::Result<channel::Channel<T, E, S>>>,
 {
-    type Output = Result<Sender<T, E, S::Right>, SenderBuilderError>;
+    type Output = Result<Sender<T, E, S::Right>, channel::builder::errors::BuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        let channel = match ready!(this.fut.poll(cx)).context(SenderBuilderSnafu) {
+        let channel = match ready!(this.fut.poll(cx)) {
             Ok(channel) => channel,
             Err(error) => return Poll::Ready(Err(error)),
         };
@@ -367,12 +365,12 @@ where
     S: Split,
     Fut: Future<Output = channel::builder::Result<channel::Channel<T, E, S>>>,
 {
-    type Output = Result<Sender<T, E, S::Right>, SenderBuilderError>;
+    type Output = Result<Sender<T, E, S::Right>, channel::builder::errors::BuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        let channel = match ready!(this.fut.poll(cx)).context(SenderBuilderSnafu) {
+        let channel = match ready!(this.fut.poll(cx)) {
             Ok(channel) => channel,
             Err(error) => return Poll::Ready(Err(error)),
         };
@@ -525,12 +523,12 @@ where
     S: Split,
     Fut: Future<Output = channel::builder::Result<channel::Channel<T, E, S>>>,
 {
-    type Output = Result<Receiver<T, E, S::Left>, ReceiverBuilderError>;
+    type Output = Result<Receiver<T, E, S::Left>, channel::builder::errors::BuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        let channel = match ready!(this.fut.poll(cx)).context(ReceiverBuilderSnafu) {
+        let channel = match ready!(this.fut.poll(cx)) {
             Ok(channel) => channel,
             Err(error) => return Poll::Ready(Err(error)),
         };
@@ -682,39 +680,16 @@ where
     S: Split,
     Fut: Future<Output = channel::builder::Result<channel::Channel<T, E, S>>>,
 {
-    type Output = Result<Receiver<T, E, S::Left>, ReceiverBuilderError>;
+    type Output = Result<Receiver<T, E, S::Left>, channel::builder::errors::BuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        let channel = match ready!(this.fut.poll(cx)).context(ReceiverBuilderSnafu) {
+        let channel = match ready!(this.fut.poll(cx)) {
             Ok(channel) => channel,
             Err(error) => return Poll::Ready(Err(error)),
         };
 
         Poll::Ready(Ok(Receiver(channel.split().0.into())))
-    }
-}
-
-pub mod errors {
-    use super::*;
-    use snafu::Snafu;
-
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[SenderBuilderError] Failed building sender"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct SenderBuilderError {
-        /// source Error
-        source: channel::builder::errors::ChannelBuilderError,
-        backtrace: Backtrace,
-    }
-
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[ReceiverBuilderError] Failed building sender"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct ReceiverBuilderError {
-        /// source Error
-        source: channel::builder::errors::ChannelBuilderError,
-        backtrace: Backtrace,
     }
 }

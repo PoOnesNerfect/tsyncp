@@ -1,4 +1,7 @@
-use super::{errors::AcceptingError, AcceptingSnafu, Channel, PushStreamSnafu};
+use super::{
+    errors::{AcceptError, StreamPoolAcceptSnafu},
+    Channel, PushStreamSnafu,
+};
 use crate::util::accept::Accept;
 use futures::{ready, Future, FutureExt};
 use pin_project::pin_project;
@@ -27,7 +30,7 @@ impl<'pin, T, E, const N: usize, L> Future for AcceptFuture<'pin, T, E, N, L>
 where
     L: Accept,
 {
-    type Output = Result<SocketAddr, AcceptingError<L::Error>>;
+    type Output = Result<SocketAddr, AcceptError<L::Error>>;
 
     fn poll(
         self: std::pin::Pin<&mut Self>,
@@ -39,7 +42,7 @@ where
             .channel
             .listener
             .poll_accept(&this.channel.stream_config, cx))
-        .context(AcceptingSnafu)?;
+        .context(StreamPoolAcceptSnafu)?;
 
         this.channel
             .stream_pool
@@ -61,7 +64,7 @@ where
     fut: Fut,
     limit: Option<usize>,
     addrs: Vec<SocketAddr>,
-    err: Option<AcceptingError<L::Error>>,
+    err: Option<AcceptError<L::Error>>,
     _phantom: PhantomData<(&'pin (), T, E, L)>,
 }
 
@@ -104,10 +107,7 @@ where
     L: Accept,
     Fut: AsRef<Channel<T, E, N, L>> + AsMut<Channel<T, E, N, L>> + Future + Unpin,
 {
-    type Output = (
-        Fut::Output,
-        Result<Vec<SocketAddr>, AcceptingError<L::Error>>,
-    );
+    type Output = (Fut::Output, Result<Vec<SocketAddr>, AcceptError<L::Error>>);
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -120,7 +120,7 @@ where
                 .listener
                 .poll_accept(&channel_ref.stream_config, cx)
             {
-                match res.context(AcceptingSnafu) {
+                match res.context(StreamPoolAcceptSnafu) {
                     Ok((s, a)) => {
                         let channel_mut = self.fut.as_mut();
                         channel_mut

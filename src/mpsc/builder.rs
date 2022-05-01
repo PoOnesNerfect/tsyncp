@@ -1,10 +1,8 @@
 use super::{Receiver, Sender};
 use crate::util::{accept::Accept, listener::ReadListener, split::Split};
 use crate::{channel, multi_channel};
-use errors::*;
 use futures::{ready, Future};
 use pin_project::pin_project;
-use snafu::{Backtrace, ResultExt};
 use std::fmt;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::task::Poll;
@@ -183,12 +181,12 @@ where
     Fut: Future<Output = channel::builder::Result<channel::Channel<T, E, S>>>,
     S: Split,
 {
-    type Output = Result<Sender<T, E, S::Right>, SenderBuilderError>;
+    type Output = Result<Sender<T, E, S::Right>, channel::builder::errors::BuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        let channel = match ready!(this.fut.poll(cx)).context(SenderBuilderSnafu) {
+        let channel = match ready!(this.fut.poll(cx)) {
             Ok(channel) => channel,
             Err(error) => return Poll::Ready(Err(error)),
         };
@@ -290,7 +288,7 @@ where
         impl Future<
             Output = Result<
                 multi_channel::Channel<T, E, N>,
-                multi_channel::builder::errors::ChannelBuilderError,
+                multi_channel::builder::errors::BuilderError,
             >,
         >,
         N,
@@ -443,39 +441,17 @@ where
     Filter: Fn(SocketAddr) -> bool,
     Fut: Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N, L>>>,
 {
-    type Output = Result<Receiver<T, E, N, ReadListener<L>>, ReceiverBuilderError>;
+    type Output =
+        Result<Receiver<T, E, N, ReadListener<L>>, multi_channel::builder::errors::BuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
 
-        let channel = match ready!(this.fut.poll(cx)).context(ReceiverBuilderSnafu) {
+        let channel = match ready!(this.fut.poll(cx)) {
             Ok(channel) => channel,
             Err(error) => return Poll::Ready(Err(error)),
         };
 
         Poll::Ready(Ok(channel.split().0))
-    }
-}
-
-pub mod errors {
-    use super::*;
-    use snafu::Snafu;
-
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[SenderBuilderError] Failed building sender"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct SenderBuilderError {
-        /// source Error
-        source: channel::builder::errors::ChannelBuilderError,
-        backtrace: Backtrace,
-    }
-
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[ReceiverBuilderError] Failed building sender"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct ReceiverBuilderError {
-        /// source Error
-        source: multi_channel::builder::errors::ChannelBuilderError,
-        backtrace: Backtrace,
     }
 }

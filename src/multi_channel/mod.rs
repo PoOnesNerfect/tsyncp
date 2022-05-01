@@ -1,8 +1,5 @@
 use crate::util::codec::{DecodeMethod, EncodeMethod};
-use crate::util::stream_pool::{
-    errors::{StreamPoolError, StreamPoolPollError, StreamPoolSinkError},
-    StreamPool,
-};
+use crate::util::stream_pool::StreamPool;
 use crate::util::{
     accept::Accept,
     listener::{ListenerWrapper, ReadListener, WriteListener},
@@ -10,12 +7,10 @@ use crate::util::{
 };
 use crate::{broadcast, mpsc};
 use errors::*;
-use futures::Sink;
-use futures::Stream;
 use futures::{ready, Future};
-use snafu::{ensure, Backtrace, ResultExt};
+use futures::{Sink, SinkExt, Stream};
+use snafu::{ensure, ResultExt};
 use std::fmt;
-use std::io::ErrorKind;
 use std::marker::PhantomData;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::task::Poll;
@@ -109,7 +104,7 @@ where
 {
     type Left = mpsc::Receiver<T, E, N, ReadListener<L>>;
     type Right = broadcast::Sender<T, E, N, WriteListener<L>>;
-    type Error = ChannelUnsplitError<<L::Output as Split>::Error>;
+    type Error = UnsplitError<<L::Output as Split>::Error>;
 
     fn split(self) -> (Self::Left, Self::Right) {
         let Channel {
@@ -171,11 +166,11 @@ where
         ensure!(l_stream_config == r_stream_config, UnequalStreamConfigSnafu);
 
         let listener = ListenerWrapper::<L>::unsplit(l_listener, r_listener)
-            .context(ListenerSnafu)?
+            .context(ListenerUnsplitSnafu)?
             .into_inner();
 
         let stream_pool = StreamPool::<L::Output, N>::unsplit(l_stream_pool, r_stream_pool)
-            .context(StreamPoolSnafu)?;
+            .context(StreamPoolUnsplitSnafu)?;
 
         Ok(Self {
             listener,
@@ -211,7 +206,7 @@ impl<T, E: DecodeMethod<T>, const N: usize, L: Accept> Stream for Channel<T, E, 
 where
     L::Output: AsyncRead + Unpin,
 {
-    type Item = Result<T, ChannelStreamError<E::Error>>;
+    type Item = Result<T, StreamError<E::Error>>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -220,12 +215,12 @@ where
         let (frame, addr) = match ready!(self.project().stream_pool.poll_next(cx)) {
             Some((Ok(frame), addr)) => (frame, addr),
             Some((Err(error), addr)) => {
-                return Poll::Ready(Some(Err(error).context(PollNextSnafu { addr })))
+                return Poll::Ready(Some(Err(error).context(StreamSnafu { addr })))
             }
             None => return Poll::Ready(None),
         };
 
-        let decoded = E::decode(frame).context(FrameDecodeSnafu { addr });
+        let decoded = E::decode(frame).context(ItemDecodeSnafu { addr });
 
         Poll::Ready(Some(decoded))
     }
@@ -250,254 +245,156 @@ where
     E: EncodeMethod<T>,
     L::Output: AsyncWrite + Unpin,
 {
-    type Error = ChannelSinkError<E::Error>;
+    type Error = SinkError<E::Error>;
 
-    fn start_send(self: std::pin::Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
-        let encoded = E::encode(&item).context(ItemEncodeSnafu)?;
+    fn start_send(mut self: std::pin::Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
+        let encoded = E::encode(&item).context(ItemEncodeSnafu {
+            addr: *self.local_addr(),
+        })?;
 
-        self.project()
-            .stream_pool
-            .start_send(encoded)
-            .context(StartSendSnafu)?;
+        self.stream_pool
+            .start_send_unpin(encoded)
+            .context(SinkSnafu {
+                addr: *self.local_addr(),
+            })?;
 
         Ok(())
     }
 
     fn poll_ready(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        let res = ready!(self.project().stream_pool.poll_ready(cx)).context(PollReadySnafu);
+        let res = ready!(self.stream_pool.poll_ready_unpin(cx)).context(SinkSnafu {
+            addr: *self.local_addr(),
+        });
 
         Poll::Ready(res)
     }
 
     fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        let res = ready!(self.project().stream_pool.poll_flush(cx)).context(PollFlushSnafu);
+        let res = ready!(self.stream_pool.poll_flush_unpin(cx)).context(SinkSnafu {
+            addr: *self.local_addr(),
+        });
 
         Poll::Ready(res)
     }
 
     fn poll_close(
-        self: std::pin::Pin<&mut Self>,
+        mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        let res = ready!(self.project().stream_pool.poll_close(cx)).context(PollCloseSnafu);
+        let res = ready!(self.stream_pool.poll_close_unpin(cx)).context(SinkSnafu {
+            addr: *self.local_addr(),
+        });
 
         Poll::Ready(res)
     }
 }
 
 pub mod errors {
-    use super::*;
-    use crate::util::{
-        listener::errors::UnsplitListenerError, stream_pool::errors::StreamPoolSplitError,
-    };
-    use snafu::Snafu;
+    use crate::util::{listener, stream_pool};
+    use snafu::{Backtrace, Snafu};
+    use std::io::ErrorKind;
+    use std::net::SocketAddr;
 
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
-    pub enum ChannelSinkError<E>
+    pub enum SinkError<E>
     where
         E: 'static + snafu::Error,
     {
-        #[snafu(display("[ChannelSinkError] Failed to encode item"))]
-        ItemEncode { source: E, backtrace: Backtrace },
-        #[snafu(display("[ChannelSinkError] Failed send_to"))]
-        SendTo {
-            addrs: Vec<SocketAddr>,
-            source: StreamPoolSinkError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[ChannelSinkError] Failed send_filtered"))]
-        SendFiltered {
-            source: StreamPoolSinkError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[ChannelSinkError] Failed start_send"))]
-        StartSend {
-            source: StreamPoolSinkError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[ChannelSinkError] Failed poll_ready"))]
-        PollReady {
-            source: StreamPoolSinkError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[ChannelSinkError] Failed poll_flush"))]
-        PollFlush {
-            source: StreamPoolSinkError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[ChannelSinkError] Failed poll_close"))]
-        PollClose {
-            source: StreamPoolSinkError,
-            backtrace: Backtrace,
-        },
-    }
-
-    impl<E> ChannelSinkError<E>
-    where
-        E: 'static + snafu::Error,
-    {
-        pub fn errors(&self) -> Option<impl Iterator<Item = &StreamPoolPollError>> {
-            match self {
-                Self::ItemEncode { .. } => None,
-                Self::SendTo { source, .. } => Some(source.errors()),
-                Self::SendFiltered { source, .. } => Some(source.errors()),
-                Self::StartSend { source, .. } => Some(source.errors()),
-                Self::PollReady { source, .. } => Some(source.errors()),
-                Self::PollFlush { source, .. } => Some(source.errors()),
-                Self::PollClose { source, .. } => Some(source.errors()),
-            }
-        }
-
-        pub fn into_errors(self) -> Option<impl Iterator<Item = StreamPoolPollError>> {
-            match self {
-                Self::ItemEncode { .. } => None,
-                Self::SendTo { source, .. } => Some(source.into_errors()),
-                Self::SendFiltered { source, .. } => Some(source.into_errors()),
-                Self::StartSend { source, .. } => Some(source.into_errors()),
-                Self::PollReady { source, .. } => Some(source.into_errors()),
-                Self::PollFlush { source, .. } => Some(source.into_errors()),
-                Self::PollClose { source, .. } => Some(source.into_errors()),
-            }
-        }
-
-        pub fn as_io(&self) -> Option<impl Iterator<Item = &std::io::Error>> {
-            match self {
-                Self::ItemEncode { .. } => None,
-                Self::SendTo { source, .. } => Some(source.as_io()),
-                Self::SendFiltered { source, .. } => Some(source.as_io()),
-                Self::StartSend { source, .. } => Some(source.as_io()),
-                Self::PollReady { source, .. } => Some(source.as_io()),
-                Self::PollFlush { source, .. } => Some(source.as_io()),
-                Self::PollClose { source, .. } => Some(source.as_io()),
-            }
-        }
-
-        pub fn into_io(self) -> Option<impl Iterator<Item = std::io::Error>> {
-            match self {
-                Self::ItemEncode { .. } => None,
-                Self::SendTo { source, .. } => Some(source.into_io()),
-                Self::SendFiltered { source, .. } => Some(source.into_io()),
-                Self::StartSend { source, .. } => Some(source.into_io()),
-                Self::PollReady { source, .. } => Some(source.into_io()),
-                Self::PollFlush { source, .. } => Some(source.into_io()),
-                Self::PollClose { source, .. } => Some(source.into_io()),
-            }
-        }
-    }
-
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum ChannelUnsplitError<E: 'static + snafu::Error> {
-        #[snafu(display("[ChannelUnsplitError] Underlying channels' local addrs are different: {l_local_addr:?} != {r_local_addr:?}"))]
-        UnequalLocalAddr {
-            l_local_addr: SocketAddr,
-            r_local_addr: SocketAddr,
-        },
-        #[snafu(display(
-            "[ChannelUnsplitError] Underlying channels' stream configs are different"
-        ))]
-        UnequalStreamConfig,
-        #[snafu(display("[ChannelUnsplitError] Failed to split underlying listener"))]
-        Listener {
-            source: UnsplitListenerError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[ChannelUnsplitError] Failed to split underlying stream pool"))]
-        StreamPool {
-            source: StreamPoolSplitError<E>,
-            backtrace: Backtrace,
-        },
-    }
-
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum SinkAcceptError<LE, EE>
-    where
-        LE: 'static + snafu::Error,
-        EE: 'static + snafu::Error,
-    {
-        #[snafu(display("[ChannelEncodeError] Failed to encode item"))]
-        EncodeError { source: EE, backtrace: Backtrace },
-        #[snafu(display("[ChannelAcceptError] Failed to accept stream"))]
-        AcceptError {
-            source: AcceptingError<LE>,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[ChannelStartSend] Failed to start sending item"))]
-        AcceptAndStartSend {
-            source: StreamPoolSinkError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[ChannelPollReadyError] failed to send item"))]
-        AcceptAndPollReadyError {
-            source: StreamPoolSinkError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[ChannelPollFlushError] failed to flush streams"))]
-        AcceptAndPollFlushError {
-            source: StreamPoolSinkError,
-            backtrace: Backtrace,
-        },
-    }
-
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum AcceptingError<E: 'static + snafu::Error> {
-        #[snafu(display("[AcceptingError] Failed to accept stream"))]
-        Accepting { source: E, backtrace: Backtrace },
-        #[snafu(display("[AcceptingError] Failed to push accepted stream to stream pool"))]
-        PushStream {
-            source: StreamPoolError,
-            backtrace: Backtrace,
-        },
-    }
-
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum ChannelStreamError<E>
-    where
-        E: 'static + snafu::Error,
-    {
-        #[snafu(display("[ChannelStreamError] Failed to decode frame of item on {addr}"))]
-        FrameDecode {
+        #[snafu(display("[Encode Error] Failed to encode item on {addr}"))]
+        ItemEncode {
             addr: SocketAddr,
             source: E,
             backtrace: Backtrace,
         },
-        #[snafu(display("[ChannelStreamError] Failed poll_next on {addr}"))]
-        PollNext {
+        #[snafu(display("[Sink Error] Failed to send item on {addr}"))]
+        SinkError {
             addr: SocketAddr,
-            source: StreamPoolError,
+            source: stream_pool::errors::SinkError,
             backtrace: Backtrace,
         },
     }
 
-    impl<E> ChannelStreamError<E>
+    impl<E> SinkError<E>
     where
         E: 'static + snafu::Error,
     {
         pub fn addr(&self) -> &SocketAddr {
             match self {
-                Self::FrameDecode { addr, .. } => addr,
-                Self::PollNext { addr, .. } => addr,
+                Self::SinkError { addr, .. } => addr,
+                Self::ItemEncode { addr, .. } => addr,
+            }
+        }
+
+        pub fn as_errors(&self) -> Option<impl Iterator<Item = &stream_pool::errors::PollError>> {
+            match self {
+                Self::SinkError { source, .. } => Some(source.as_errors()),
+                _ => None,
+            }
+        }
+
+        pub fn into_errors(self) -> Option<impl Iterator<Item = stream_pool::errors::PollError>> {
+            match self {
+                Self::SinkError { source, .. } => Some(source.into_errors()),
+                _ => None,
+            }
+        }
+
+        pub fn as_io_errors(&self) -> Option<impl Iterator<Item = &std::io::Error>> {
+            match self {
+                Self::SinkError { source, .. } => Some(source.as_io_errors()),
+                _ => None,
+            }
+        }
+
+        pub fn into_io_errors(self) -> Option<impl Iterator<Item = std::io::Error>> {
+            match self {
+                Self::SinkError { source, .. } => Some(source.into_io_errors()),
+                _ => None,
             }
         }
     }
 
-    impl<E> ChannelStreamError<E>
+    #[derive(Debug, Snafu)]
+    #[snafu(visibility(pub(super)))]
+    pub enum StreamError<E>
+    where
+        E: 'static + snafu::Error,
+    {
+        #[snafu(display("[Decode Error] Failed to decode frame of item on {addr}"))]
+        ItemDecode {
+            addr: SocketAddr,
+            source: E,
+            backtrace: Backtrace,
+        },
+        #[snafu(display("[Stream Error] Failed receive item on {addr}"))]
+        StreamError {
+            addr: SocketAddr,
+            source: stream_pool::errors::PollError,
+            backtrace: Backtrace,
+        },
+    }
+
+    impl<E> StreamError<E>
     where
         E: snafu::Error,
     {
+        pub fn addr(&self) -> &SocketAddr {
+            match self {
+                Self::StreamError { addr, .. } => addr,
+                Self::ItemDecode { addr, .. } => addr,
+            }
+        }
+
         pub fn as_io(&self) -> Option<&std::io::Error> {
             match self {
-                Self::PollNext { source, .. } => source.as_io(),
+                Self::StreamError { source, .. } => source.as_io(),
                 _ => None,
             }
         }
@@ -525,5 +422,45 @@ pub mod errors {
                 .map(|e| e.kind() == ErrorKind::NotConnected)
                 .unwrap_or_default()
         }
+
+        pub fn is_broken_pipe(&self) -> bool {
+            self.as_io()
+                .map(|e| e.kind() == ErrorKind::BrokenPipe)
+                .unwrap_or_default()
+        }
+    }
+
+    #[derive(Debug, Snafu)]
+    #[snafu(visibility(pub(super)))]
+    pub enum UnsplitError<E: 'static + snafu::Error> {
+        #[snafu(display("[Unsplit Error] Underlying channels' local addrs are different: {l_local_addr:?} != {r_local_addr:?}"))]
+        UnequalLocalAddr {
+            l_local_addr: SocketAddr,
+            r_local_addr: SocketAddr,
+        },
+        #[snafu(display("[Unsplit Error] Underlying channels' stream configs are different"))]
+        UnequalStreamConfig,
+        #[snafu(display("[Unsplit Error] Failed to split underlying listener"))]
+        ListenerUnsplitError {
+            source: listener::errors::UnsplitError,
+            backtrace: Backtrace,
+        },
+        #[snafu(display("[Unsplit Error] Failed to split underlying stream pool"))]
+        StreamPoolUnsplitError {
+            source: stream_pool::errors::UnsplitError<E>,
+            backtrace: Backtrace,
+        },
+    }
+
+    #[derive(Debug, Snafu)]
+    #[snafu(visibility(pub(super)))]
+    pub enum AcceptError<E: 'static + snafu::Error> {
+        #[snafu(display("[Accept Error] Underlying stream pool failed to accept"))]
+        StreamPoolAcceptError { source: E, backtrace: Backtrace },
+        #[snafu(display("[Accept Error] Failed to push accepted stream to stream pool"))]
+        PushStream {
+            source: stream_pool::errors::StreamPoolError,
+            backtrace: Backtrace,
+        },
     }
 }
