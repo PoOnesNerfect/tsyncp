@@ -12,7 +12,7 @@
 //! Currently, **tsyncp** provides 6 types of channels:
 //! * [mpsc]: Multi-producer/single-consumer channel.
 //! * [broadcast]: Sigle-producer/multi-consumer channel.
-//! * [barrier]: Ensures multiple waiters [wait] for the barrier to [release].
+//! * [barrier]: Multiple waiters [wait] for a barrier to [release].
 //! * [spsc]: Single-producer/single-consumer channel.
 //! * [channel]: Generic single-connection channel for sending/receiving data.
 //! Can [split](channel::Channel::split) into `Sender` and `Receiver` pair.
@@ -34,36 +34,38 @@
 //! ## Contents
 //! * [Features](#features)
 //! * [Initializing Receiver](#initializing-receiver)
+//! * [Chaining the Builder Future](#chaining-the-builder-future)
 //! * [Initializing Sender](#initializing-sender)
 //! * [Send and Receive Data Concurrently with Channel/MultiChannel](#send-and-receive-data-concurrently-with-channelmultichannel)
+//! * [Chaining Futures to Send/Recv Methods](#chaining-futures-to-sendrecv-methods)
 //!
 //! ## Features
 //!
-//! By default, a few features (`json`, `protobuf`, `bincode`) are enabled for uses in
-//! encoding/decoding data. (WIP - only json and protobuf are supported so far)
+//! By default, `full` feature (`json`, `protobuf`, and `bincode`) is enabled for uses in
+//! encoding/decoding data.
 //!
-//! If you would like to use other encoding schemes like `rkyv`, include it like this:
+//! If you only need one encoding/decoding schemes, disable `default-features`, and
+//! include only the ones you want.
 //!
 //! ```toml
-//! tsyncp = { version = "0.1", default-features = false, features = ["rkyv"] }
+//! tsyncp = { version = "0.3", default-features = false, features = ["bincode"] }
 //! ```
 //!
 //! All possible features are:
-//! * [full]: includes all features.
+//! * [full]: includes all features. (json, protobuf, bincode)
 //! * [json]: serializing/deserializing data as json objects.
 //! * [protobuf]: serializing/deserializing data as protobuf objects.
+//! * [bincode]: encoding/decoding data as compact bytes.
 //!
 //! **WIP** features:
-//! * [bincode]: encoding/decoding data as compact bytes.
-//! * [speedy]: super fast encoding/decoding of data.
-//! * [rkyv]: super fast encoding/decoding of data and allows zero-copy deserialization.
+//! * `speedy`: super fast encoding/decoding of data.
+//! * `rkyv`: super fast encoding/decoding of data and allows zero-copy deserialization.
+//! * Any other ones I should support?
 //!
 //! [full]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
 //! [json]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
 //! [protobuf]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
 //! [bincode]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
-//! [speedy]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
-//! [rkyv]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
 //!
 //! ## Initializing Channels
 //!
@@ -92,9 +94,9 @@
 //!     // accept a new connection coming from a sender application.
 //!     rx.accept().await?;
 //!
-//!     // after accepting connection, you can start receiving data from it.
+//!     // after accepting connection, you can start receiving data from the receiver.
 //!     if let Some(Ok(item)) = rx.recv().await {
-//!         // below is to show the type of received item.
+//!         // below line is to show the type of received item.
 //!         let item: Dummy = item;
 //!
 //!         println!("received item: {item:?}");
@@ -104,24 +106,23 @@
 //! }
 //! ```
 //!
-//! This will create a [mpsc::Receiver] that can accept connections on `"localhost:11114"`
-//! and receive json data.
+//! This creates a [mpsc::Receiver] that can accept connections on `"localhost:11114"` and receive json data.
 //!
 //! `recv_on(_)` can take any parameter that implements [ToSocketAddrs](std::net::ToSocketAddrs). (i.e. `([127, 0, 0, 1], 11114)` or `"127.0.0.1:11114"`)
 //!
 //! [JsonReceiver](mpsc::JsonReceiver) is a type alias for `Recevier<T, JsonCodec>`.
 //!
-//! You can use other codecs by replacing the type specifier like `ProtobufReceiver<T>`,
-//! or like `Receiver<T, ProtobufCodec>`. Other codecs are available at [util::codec].
+//! You can use other codecs by replacing the type specifier as `ProtobufReceiver<T>`, for example,
+//! or as `Receiver<T, ProtobufCodec>`. Other codecs are available at [util::codec].
 //! Make sure that sender and receiver are using the same codec to encode/decode data.
 //!
 //! After initialization, you have to accept new connections to receive items. By default, it does not
-//! have any connections and will return `None` when you call `recv()` on it.
+//! accept any connections and will return `None` when you call `recv()` on it.
 //!
 //!
-//! #### Configuring the Builder Future
+//! #### Chaining the Builder Future
 //!
-//! You can append configuration methods to the `recv_on(_)` like `recv_on(_).accept(n)`.
+//! You can chain configuration methods to the `recv_on(_)` like `recv_on(_).accept(n)`.
 //!
 //! ```no_run
 //! # use color_eyre::{Result, Report};
@@ -149,7 +150,7 @@
 //! In the above example, it will initially accept 5 connections before returning the receiver.
 //! This is useful if you want to wait for connections before doing anything with it.
 //!
-//! You can append as many configurations as you want before calling `.await` on it.
+//! You can chain as many configurations as you want before calling `.await` on it.
 //!
 //! ```no_run
 //! # use color_eyre::{Result, Report};
@@ -165,10 +166,10 @@
 //! # #[tokio::main]
 //! # async fn main() -> Result<()> {
 //! let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114")
-//!     .limit(10)
-//!     .accept_full()
-//!     .set_tcp_reuseaddr(true)
-//!     .set_tcp_nodelay(true)
+//!     .limit(10)                      // Limit upperbound number of connections to 10.
+//!     .accept_full()                  // Accept connections up to the limit.
+//!     .set_tcp_reuseaddr(true)        // Set tcp reuseaddr option to `true`.
+//!     .set_tcp_nodelay(true)          // set tcp nodelay option to `true`.
 //!     .await?;
 //!
 //! while let Some(Ok(item)) = rx.recv().await {
@@ -184,7 +185,7 @@
 //!
 //! Also, it will set tcp settings for `reuseaddr` and `nodelay`.
 //!
-//! You can see all available configurations in [ReceiverBuilderFuture](mpsc::builder::ReceiverBuilderFuture).
+//! You can see all available chain methods in [ReceiverBuilderFuture](mpsc::builder::ReceiverBuilderFuture).
 //!
 //!
 //! #### Initializing Sender
@@ -222,12 +223,12 @@
 //! # }
 //! ```
 //!
-//! This will create an outgoing connection to `"localhost:11114"`.
+//! This will create an outgoing connection to `"localhost:11114"`, and send a dummy data to it.
 //!
 //! However, if the receiver is not yet initialized and accepting connections on this address, it will return
 //! an error `ConnectionRefused`.
 //!
-//! You can append configurations to the init method to retry connections instead of failing.
+//! You can chain configurations to the init method to retry connections instead of failing.
 //!
 //! ```no_run
 //! # use color_eyre::{Result, Report};
@@ -249,7 +250,7 @@
 //! let max_retries = 100;
 //!
 //! let mut tx: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:11114")
-//!     .retry(retry_interval, max_retries)
+//!     .retry(retry_interval, max_retries)     // retry outgoing connection 100 times every 500 ms
 //!     .await?;
 //!
 //! let dummy = Dummy {
@@ -291,7 +292,7 @@
 //! The wrappers are created to isolate their functionalities to just sending or just receiving
 //! data.
 //!
-//! However, at some point, you might want to send and receive using the same TCP connection.
+//! However, at some point, you may want to send and receive using the same TCP connection.
 //! In these cases, you can use [channel] and [multi_channel].
 //!
 //! [channel::Channel] can be used for a single connection, and [multi_channel::Channel] can be
@@ -328,7 +329,7 @@
 //! }
 //!
 //!
-//! // Separate service connecting to above channel with `channel_to`.
+//! // Different service connecting to above channel with `channel_to`.
 //! let retry_interval = Duration::from_millis(500);
 //! let max_retries = 100;
 //!
@@ -392,7 +393,7 @@
 //! and [Sender](mpsc::Sender) is from [mpsc], which is a single connection sender.
 //!
 //! Now, you can move `rx` and `tx` into separate threads or tasks, and send and receive data
-//! concurrently.
+//! concurrently on the same TCP connection.
 //!
 //! For [multi_channel::Channel], it's pretty similar.
 //!
@@ -436,6 +437,81 @@
 //! stream, and, with [broadcast::Sender], you can broadcast data to all connections. You can also
 //! move each of `tx` and `rx` into separate threads or tasks and send and receive data
 //! concurrently.
+//!
+//! #### Chaining Futures to Send/Recv Methods
+//!
+//! You can chain configurations to `send`/`recv` methods as well.
+//!
+//! ```no_run
+//! # use color_eyre::{Result, Report};
+//! # use serde::{Serialize, Deserialize};
+//! # use std::time::Duration;
+//! use tsyncp::{broadcast, mpsc, multi_channel};
+//!
+//! # #[derive(Debug, Clone, Serialize, Deserialize)]
+//! # struct Dummy {
+//! #     field1: String,
+//! #     field2: u64,
+//! #     field3: Vec<u8>,
+//! # }
+//! # #[tokio::main]
+//! # async fn main() -> Result<()> {
+//! // Creating multi_channel with `channel_on`.
+//! // Configure to set limit to 10 connections and wait til all 10 connections are accepted.
+//! let ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+//!     .limit(10)
+//!     .accept_full()
+//!     .await?;
+//!
+//! // split channel into (rx, tx) pair.
+//! let (mut rx, mut tx) = ch.split();
+//!
+//! tokio::spawn(async move {
+//!     // receive data with addr.
+//!     if let Some(Ok((item, addr))) = rx
+//!         .recv()
+//!         .with_addr()                        // Receive data with addr it came from.
+//!         .await
+//!     {
+//!         println!("{item:?} received from {addr}");
+//!     }
+//!
+//!     // receive data and accept connections concurrently.
+//!     while let (Some(Ok((item, addr))), Ok(_accepted_addrs)) = rx
+//!         .recv()
+//!         .with_addr()                        // Receive data with addr it came from.
+//!         .accepting()                        // While receiving, accept incoming connections.
+//!         .await
+//!     {
+//!         println!("{item:?} received from {addr}");
+//!     }
+//! });
+//!
+//! tokio::spawn(async move {
+//!     let dummy = Dummy {
+//!         field1: String::from("hello world"),
+//!         field2: 1234567,
+//!         field3: vec![1, 2, 3, 4]
+//!     };
+//!
+//!     if let (Ok(()), Ok(accepted_addrs)) = tx
+//!         .send(dummy)
+//!         .filtered(|a| a.port() % 2 == 0)    // Only send item to addresses with even port.
+//!         .accepting()                        // While sending, accept incoming connections.
+//!         .await
+//!     {
+//!         for addr in accepted_addrs {
+//!             println!("accepted connection from {addr} while sending dummy!");
+//!         }
+//!     }
+//! });
+//!
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! For chain futures for `send`, see [SendFuture](multi_channel::send::SendFuture).
+//! For chain futures for `recv`, see [RecvFuture](multi_channel::recv::RecvFuture).
 
 pub mod barrier;
 pub mod broadcast;

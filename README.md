@@ -2,8 +2,8 @@
 
 ### Synchronization primitives over TCP for message passing.
 
-Major rust libraries such as [std] and [tokio] provide great synchronization primitives to be
-used for message-passing between threads and tasks. However, there are not many libraries
+Major rust libraries such as [std] and [tokio] provide great synchronization primitives for
+message-passing between threads and tasks. However, there are not many libraries
 that provide similar APIs that can be used over the network.
 
 **Tsyncp** tries to fill the gap by providing the similar APIs (mpsc, broadcast, barrier, etc) over TCP. If you
@@ -11,7 +11,7 @@ have a project where it only has a few services running, and they need to pass s
 instead of setting up a message-broker service, you can use tsyncp to easily pass data between them.
 
 **Tsyncp** also allows customizing different Serialization/Deserialization methods to encode/decode
-data; currently, supported schemes straight from the library are _Json_, _Protobuf_, ~_Bincode_~, ~_Speedy_~, and ~_Rkyv_~; however,
+data; currently, supported schemes straight from the library are _Json_, _Protobuf_, and _Bincode_; however,
 users can very easily implement their own [EncodeMethod] and [DecodeMethod].
 
 ## Provided APIs
@@ -27,14 +27,100 @@ Currently, **tsyncp** provides 6 types of channels:
 -   **multi_channel**: Generic multi-connection channel for sending/receiving data.
     Can split into _Sender_ and _Receiver_ pair.
 
+## Example
+
+Goal of the project is to provide extremely simple, intuitive and extendable primitives to pass data over the network.
+That's why this library uses Future-chaining extensively.
+
+Getting started is as easy as:
+
+#### mpsc::Receiver
+
+```rust
+use tsyncp::mpsc;
+
+let mut rx: mpsc::JsonReceiver<DummyStruct> = mpsc::recv_on("localhost:8000").await?;
+
+rx.accept().await?;
+
+while let Some(Ok(dummy)) = rx.recv().await {
+    println!("received {dummy:?}");
+    ...handle dummy
+}
+```
+
+But you can easily extend it by chaining the futures as:
+
+```rust
+use tsyncp::mpsc;
+
+let mut rx: mpsc::JsonReceiver<DummyStruct> = mpsc::recv_on("localhost:8000")
+    .limit(10)                                      // Limit total number of connections to 10.
+    .accept_filtered(5, |a| a.port() % 2 == 0)      // Before returning rx, accept 5 connections where the port value is even.
+    .set_tcp_nodelay(true)                          // Set tcp nodelay option to true.
+    .set_tcp_reuseaddr(true)                        // Set tcp reuseaddr option to true.
+    .await?;
+
+while let (Some(Ok(dummy_bytes, addr)), Ok(accepted_addrs)) = rx
+    .recv()
+    .as_bytes()                                     // Instead of receiving decoded `DummyStruct`, return raw bytes.
+    .with_addr()                                    // Return remote `SocketAddr` along with data.
+    .accepting()                                    // While waiting to receive, also accept incoming connections.
+    .limit(5)                                       // Only accept 5 connections. (defaults to receiver's limit if unspecified)
+    .await
+{
+    println!("received {dummy_bytes:?} from {addr}");
+
+    for addr in accepted_addrs {
+        println!("accepted connection from {addr} while waiting to receive data");
+    }
+
+    ...handle dummy
+}
+```
+
+#### mpsc::Sender
+
+```rust
+use tsyncp::mpsc;
+
+let mut tx: mpsc::JsonSender<DummyStruct> = mpsc::send_to("localhost:8000").await?;
+
+let dummy = DummyStruct {
+    field1: String::from("hello world"),
+    field2: 123456
+};
+
+tx.send(dummy).await?;
+
+```
+
+But you can also extend it by chaining the futures as:
+
+```rust
+use tsyncp::mpsc;
+
+let mut tx: mpsc::JsonSender<DummyStruct> = mpsc::send_to("localhost:8000")
+    .retry(Duration::from_millis(500), 100)     // retry connecting to receiver 100 times every 500 ms.
+    .set_nodelay(true)                          // set tcp nodelay option to `true`
+    .await?;
+
+let dummy = DummyStruct {
+    field1: String::from("hello world"),
+    field2: 123456
+};
+
+tx.send(dummy).await?;
+```
+
 The [API documentation](https://docs.rs/tsyncp/) has a very detailed guide on how to use the primitives. So please check them out!
 
 **_Note_**: Tsyncp is built on [tokio]; and thus may not be compatible with other async runtimes like async-std.
 
 **_Note_**: If you're worried about the quality of implementation and skills of the author, you shouldn't worry! (too much...)
 This library is a relatively thin layer on top of [tokio::net::TcpStream] for TCP,
-[tokio_util::codec::Framed] for byte stream framing, and [serde], [serde_json], [Prost], etc. for serializing byte data!
-You can think of this library as a salad bowl made from the best ingredients in town and a light touch of homemade sauces.
+[tokio_util::codec::Framed] for byte stream framing, and [serde], [serde_json], [Prost] and [bincode]. for serializing byte data!
+You can think of this library as a salad bowl made from the best ingredients in town and a light touch of amateur homemade sauces.
 
 That being said, I did add a couple of my own sauces into it. The two flavours that I added are:
 
@@ -51,7 +137,7 @@ But still, since this library is still a baby, if you find any concerns in the c
 _Warning: Tsyncp is not a message-broker nor it tries to be;
 it's just a message-passing library for simple and convenient use cases._
 
-_Warning: Tsyncp is still WIP! It's usable, but still needs some encode/decode features implemented, extensive testing, documentations, and examples._
+_Warning: Tsyncp is still WIP! It's very usable, but still needs some encode/decode features implemented, extensive testing, documentations, and examples._
 
 [std]: https://doc.rust-lang.org/stable/std/
 [tokio]: https://docs.rs/tokio/latest/tokio/index.html
