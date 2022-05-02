@@ -41,7 +41,7 @@ pub type RkyvReceiver<T> = Receiver<T, crate::util::codec::RkyvCodec>;
 #[cfg(feature = "rkyv")]
 pub type RkyvSender<T, const N: usize = 0> = Sender<T, crate::util::codec::RkyvCodec, N>;
 
-pub fn send_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
+pub fn sender_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     local_addr: A,
 ) -> builder::SenderBuilderFuture<
     A,
@@ -53,7 +53,7 @@ pub fn send_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     builder::new_sender(local_addr)
 }
 
-pub fn recv_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
+pub fn receiver_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     dest: A,
 ) -> builder::ReceiverBuilderFuture<
     A,

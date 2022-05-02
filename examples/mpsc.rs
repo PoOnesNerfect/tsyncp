@@ -32,7 +32,7 @@ async fn try_main() -> Result<()> {
     let tx_handles = (0..LEN)
         .map(|_| {
             tokio::spawn(async move {
-                let mut tx: mpsc::JsonSender<Dummy> = mpsc::send_to(ADDR)
+                let mut tx: mpsc::JsonSender<Dummy> = mpsc::sender_to(ADDR)
                     .retry(Duration::from_millis(500), 100)
                     .await?;
 
@@ -69,7 +69,7 @@ async fn try_main() -> Result<()> {
 
     let rx_handle = tokio::spawn(async move {
         let mut rx: mpsc::JsonReceiver<Dummy> =
-            mpsc::recv_on(ADDR).limit(LEN).accept_full().await?;
+            mpsc::receiver_on(ADDR).limit(LEN).accept_full().await?;
 
         let mut map = std::collections::HashMap::new();
 

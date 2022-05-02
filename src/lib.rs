@@ -19,8 +19,8 @@
 //! * [multi_channel]: Generic multi-connection channel for sending/receiving data.
 //! Can [split](multi_channel::Channel::split) into `Sender` and `Receiver` pair.
 //!
-//! **Note:** If an init method ends with `_on` (i.e. [broadcast::send_on]), it's listening on a local address;
-//! if an init method ends with `_to` (i.e. [mpsc::send_to]), it's connecting to a remote address.
+//! **Note:** If an init method ends with `_on` (i.e. [broadcast::sender_on]), it's listening on a local address;
+//! if an init method ends with `_to` (i.e. [mpsc::sender_to]), it's connecting to a remote address.
 //!
 //! See [examples] to see how they can be used in practice.
 //!
@@ -38,6 +38,8 @@
 //! * [Initializing Sender](#initializing-sender)
 //! * [Send and Receive Data Concurrently with Channel/MultiChannel](#send-and-receive-data-concurrently-with-channelmultichannel)
 //! * [Chaining Futures to Send/Recv Methods](#chaining-futures-to-sendrecv-methods)
+//! * [Using Custom Encoding/Decoding Methods](#using-custom-encodingdecoding-methods)
+//! * [Modules](#modules)
 //!
 //! ## Features
 //!
@@ -71,9 +73,9 @@
 //!
 //! We'll use [mpsc] for our examples, since it's a widely known pattern.
 //!
-//! #### Initializing Receiver
+//! ### Initializing Receiver
 //!
-//! You can initialize the receiver with [mpsc::recv_on(_).await](mpsc::recv_on)
+//! You can initialize the receiver with [mpsc::receiver_on(_).await](mpsc::receiver_on)
 //!
 //! ```no_run
 //! use color_eyre::Result;
@@ -89,7 +91,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<()> {
-//!     let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").await?;
+//!     let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::receiver_on("localhost:11114").await?;
 //!
 //!     // accept a new connection coming from a sender application.
 //!     rx.accept().await?;
@@ -108,7 +110,7 @@
 //!
 //! This creates a [mpsc::Receiver] that can accept connections on `"localhost:11114"` and receive json data.
 //!
-//! `recv_on(_)` can take any parameter that implements [ToSocketAddrs](std::net::ToSocketAddrs). (i.e. `([127, 0, 0, 1], 11114)` or `"127.0.0.1:11114"`)
+//! `receiver_on(_)` can take any parameter that implements [ToSocketAddrs](std::net::ToSocketAddrs). (i.e. `([127, 0, 0, 1], 11114)` or `"127.0.0.1:11114"`)
 //!
 //! [JsonReceiver](mpsc::JsonReceiver) is a type alias for `Recevier<T, JsonCodec>`.
 //!
@@ -120,9 +122,9 @@
 //! accept any connections and will return `None` when you call `recv()` on it.
 //!
 //!
-//! #### Chaining the Builder Future
+//! ### Chaining the Builder Future
 //!
-//! You can chain configuration methods to the `recv_on(_)` like `recv_on(_).accept(n)`.
+//! You can chain configuration methods to the `receiver_on(_)` like `receiver_on(_).accept(n)`.
 //!
 //! ```no_run
 //! # use color_eyre::{Result, Report};
@@ -137,7 +139,7 @@
 //! # }
 //! # #[tokio::main]
 //! # async fn main() -> Result<()> {
-//! let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").accept(5).await?;
+//! let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::receiver_on("localhost:11114").accept(5).await?;
 //!
 //! while let Some(Ok(item)) = rx.recv().await {
 //!     println!("received item: {item:?}");
@@ -165,7 +167,7 @@
 //! # }
 //! # #[tokio::main]
 //! # async fn main() -> Result<()> {
-//! let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114")
+//! let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::receiver_on("localhost:11114")
 //!     .limit(10)                      // Limit upperbound number of connections to 10.
 //!     .accept_full()                  // Accept connections up to the limit.
 //!     .set_tcp_reuseaddr(true)        // Set tcp reuseaddr option to `true`.
@@ -188,9 +190,9 @@
 //! You can see all available chain methods in [ReceiverBuilderFuture](mpsc::builder::ReceiverBuilderFuture).
 //!
 //!
-//! #### Initializing Sender
+//! ### Initializing Sender
 //!
-//! You can initialize [mpsc::Sender] by calling [mpsc::send_to].
+//! You can initialize [mpsc::Sender] by calling [mpsc::sender_to].
 //!
 //! ```no_run
 //! # use color_eyre::{Result, Report};
@@ -205,11 +207,11 @@
 //! # #[tokio::main]
 //! # async fn main() -> Result<()> {
 //! # tokio::spawn(async move {
-//! # let rx: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").accept(1).await?;
+//! # let rx: mpsc::JsonReceiver<Dummy> = mpsc::receiver_on("localhost:11114").accept(1).await?;
 //! # Ok::<_, Report>(())
 //! # });
 //! # tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-//! let mut tx: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:11114").await?;
+//! let mut tx: mpsc::JsonSender<Dummy> = mpsc::sender_to("localhost:11114").await?;
 //!
 //! let dummy = Dummy {
 //!     field1: String::from("hello world"),
@@ -243,13 +245,13 @@
 //! # #[tokio::main]
 //! # async fn main() -> Result<()> {
 //! # tokio::spawn(async move {
-//! # let receiver: mpsc::JsonReceiver<Dummy> = mpsc::recv_on("localhost:11114").accept(1).await?;
+//! # let receiver: mpsc::JsonReceiver<Dummy> = mpsc::receiver_on("localhost:11114").accept(1).await?;
 //! # Ok::<_, Report>(())
 //! # });
 //! let retry_interval = std::time::Duration::from_millis(500);
 //! let max_retries = 100;
 //!
-//! let mut tx: mpsc::JsonSender<Dummy> = mpsc::send_to("localhost:11114")
+//! let mut tx: mpsc::JsonSender<Dummy> = mpsc::sender_to("localhost:11114")
 //!     .retry(retry_interval, max_retries)     // retry outgoing connection 100 times every 500 ms
 //!     .await?;
 //!
@@ -438,7 +440,7 @@
 //! move each of `tx` and `rx` into separate threads or tasks and send and receive data
 //! concurrently.
 //!
-//! #### Chaining Futures to Send/Recv Methods
+//! ### Chaining Futures to Send/Recv Methods
 //!
 //! You can chain configurations to `send`/`recv` methods as well.
 //!
@@ -456,14 +458,11 @@
 //! # }
 //! # #[tokio::main]
 //! # async fn main() -> Result<()> {
-//! // Creating multi_channel with `channel_on`.
-//! // Configure to set limit to 10 connections and wait til all 10 connections are accepted.
 //! let ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
 //!     .limit(10)
 //!     .accept_full()
 //!     .await?;
 //!
-//! // split channel into (rx, tx) pair.
 //! let (mut rx, mut tx) = ch.split();
 //!
 //! tokio::spawn(async move {
@@ -512,6 +511,103 @@
 //!
 //! For chain futures for `send`, see [SendFuture](multi_channel::send::SendFuture).
 //! For chain futures for `recv`, see [RecvFuture](multi_channel::recv::RecvFuture).
+//!
+//! ### Using Custom Encoding/Decoding Methods
+//!
+//! Tsyncp uses custom traits: [EncodeMethod](util::codec::EncodeMethod) and [DecodeMethod](util::codec::DecodeMethod)
+//! for encoding/decoding data.
+//!
+//! This is because there is no united way to implement serializing/deserializing; serde comes
+//! close, but not quite.
+//!
+//! Therefore, these custom traits provide a very simple way for the users to implement
+//! serializing/deserializing data.
+//!
+//! The traits themselves are extremely simple:
+//!
+//! ```ignore
+//! pub trait EncodeMethod<T> {
+//!     type Error: 'static + snafu::Error;
+//!
+//!     fn encode(data: &T) -> Result<Bytes, Self::Error>;
+//! }
+//!
+//! pub trait DecodeMethod<T> {
+//!     type Error: 'static + snafu::Error;
+//!
+//!     fn decode(bytes: BytesMut) -> Result<T, Self::Error>;
+//! }
+//! ```
+//!
+//! Let's try implementing our custom [JsonCodec](util::codec::JsonCodec)!
+//!
+//! ```
+//! use serde::{Serialize, de::DeserializeOwned};
+//! use bytes::{Bytes, BytesMut};
+//! use tsyncp::util::codec::{EncodeMethod, DecodeMethod};
+//!
+//! #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+//! pub struct CustomJsonCodec;
+//!
+//! impl<T: Serialize> EncodeMethod<T> for CustomJsonCodec {
+//!     type Error = serde_json::Error;
+//!
+//!     fn encode(data: &T) -> Result<Bytes, Self::Error> {
+//!         serde_json::to_vec(data).map(Into::into)
+//!     }
+//! }
+//!
+//! impl<T: DeserializeOwned> DecodeMethod<T> for CustomJsonCodec {
+//!     type Error = serde_json::Error;
+//!
+//!     fn decode(bytes: BytesMut) -> Result<T, Self::Error> {
+//!         serde_json::from_slice(bytes.as_ref())
+//!     }
+//! }
+//! ```
+//!
+//! Very simple!
+//!
+//! Now, if we wanted to use this codec, we can simply specify our channels with them:
+//!
+//! ```no_run
+//! # use color_eyre::{Result, Report};
+//! # use serde::{Serialize, Deserialize, de::DeserializeOwned};
+//! # use std::time::Duration;
+//! # use bytes::{Bytes, BytesMut};
+//! # use tsyncp::util::codec::{EncodeMethod, DecodeMethod};
+//! use tsyncp::mpsc;
+//!
+//! # #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+//! # pub struct CustomJsonCodec;
+//! # impl<T: Serialize> EncodeMethod<T> for CustomJsonCodec {
+//! #     type Error = serde_json::Error;
+//! #     fn encode(data: &T) -> Result<Bytes, Self::Error> {
+//! #        serde_json::to_vec(data).map(Into::into)
+//! #     }
+//! # }
+//! # impl<T: DeserializeOwned> DecodeMethod<T> for CustomJsonCodec {
+//! #     type Error = serde_json::Error;
+//! #     fn decode(bytes: BytesMut) -> Result<T, Self::Error> {
+//! #         serde_json::from_slice(bytes.as_ref())
+//! #     }
+//! # }
+//! # #[derive(Debug, Clone, Serialize, Deserialize)]
+//! # struct Dummy {
+//! #     field1: String,
+//! #     field2: u64,
+//! #     field3: Vec<u8>,
+//! # }
+//! # #[tokio::main]
+//! # async fn main() -> Result<()> {
+//! let rx: mpsc::Receiver<Dummy, CustomJsonCodec> = mpsc::receiver_on("localhost:11114").await?;
+//! let tx: mpsc::Sender<Dummy, CustomJsonCodec> = mpsc::sender_to("localhost:11114").await?;
+//!
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! You can view the traits and implementations in [util::codec].
 
 pub mod barrier;
 pub mod broadcast;

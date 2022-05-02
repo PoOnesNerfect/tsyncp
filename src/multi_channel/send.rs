@@ -1,6 +1,6 @@
 use super::{
     accept::WhileAcceptingFuture,
-    errors::{ItemEncodeSnafu, SinkError, SinkSnafu},
+    errors::{ItemEncodeSnafu, SinkError, SinkErrorsSnafu},
     Channel,
 };
 use crate::util::{accept::Accept, codec::EncodeMethod};
@@ -288,12 +288,11 @@ where
                     // return and dump all errors
                     if len == 0 {
                         return Poll::Ready(
-                            this.channel
-                                .stream_pool
-                                .drain_sink_res()
-                                .with_context(|_| SinkSnafu {
+                            this.channel.stream_pool.drain_sink_res().with_context(|_| {
+                                SinkErrorsSnafu {
                                     addr: *this.channel.local_addr(),
-                                }),
+                                }
+                            }),
                         );
                     }
 
@@ -308,7 +307,7 @@ where
             this.channel
                 .stream_pool
                 .drain_sink_res()
-                .with_context(|_| SinkSnafu {
+                .with_context(|_| SinkErrorsSnafu {
                     addr: *this.channel.local_addr(),
                 }),
         )

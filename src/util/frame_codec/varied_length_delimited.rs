@@ -281,7 +281,6 @@ pub mod errors {
     use std::io;
 
     /// Codec's error type
-    /// TODO: separate error types to `EncodeError` and `DecodeError`
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
     pub enum CodecError {
@@ -303,10 +302,10 @@ pub mod errors {
             max_frame_length: usize,
             backtrace: Backtrace,
         },
-        /// returned from invalid inner IO Error
+        /// Returned from invalid inner IO Error.
         #[snafu(display("Encountered IO Error while decoding frame"))]
         IoError {
-            /// source IO Error
+            /// Source IO Error
             source: io::Error,
             backtrace: Backtrace,
         },
@@ -322,6 +321,11 @@ pub mod errors {
     }
 
     impl CodecError {
+        /// Try to view the error as [std::io::Error].
+        ///
+        /// This is useful to see if the returned error is from the underlying TCP connection.
+        /// This method will be bubbled up with the error, and also be available at the highest
+        /// level.
         pub fn as_io(&self) -> Option<&io::Error> {
             if let Self::IoError { source, .. } = self {
                 return Some(source);
@@ -330,6 +334,11 @@ pub mod errors {
             None
         }
 
+        /// Try converting the error as [std::io::Error].
+        ///
+        /// This is useful to see if the returned error is from the underlying TCP connection.
+        /// This method will be bubbled up with the error, and also be available at the highest
+        /// level.
         pub fn into_io(self) -> Option<io::Error> {
             if let Self::IoError { source, .. } = self {
                 return Some(source);
@@ -338,30 +347,71 @@ pub mod errors {
             None
         }
 
+        /// Check if the error is a connection error.
+        ///
+        /// Returns `true` if the error either `reset`, `refused`, `aborted`, 'not connected`, or
+        /// `broken pipe`.
+        ///
+        /// This is useful to see if the returned error is from the underlying TCP connection.
+        /// This method will be bubbled up with the error, and also be available at the highest
+        /// level.
+        pub fn is_connection_error(&self) -> bool {
+            self.is_connection_reset()
+                || self.is_connection_refused()
+                || self.is_connection_aborted()
+                || self.is_not_connected()
+                || self.is_broken_pipe()
+        }
+
+        /// Check if the error is from connection reset.
+        ///
+        /// This is useful to see if the returned error is from the underlying TCP connection.
+        /// This method will be bubbled up with the error, and also be available at the highest
+        /// level.
         pub fn is_connection_reset(&self) -> bool {
             self.as_io()
                 .map(|e| e.kind() == io::ErrorKind::ConnectionReset)
                 .unwrap_or_default()
         }
 
+        /// Check if the error is from connection refused.
+        ///
+        /// This is useful to see if the returned error is from the underlying TCP connection.
+        /// This method will be bubbled up with the error, and also be available at the highest
+        /// level.
         pub fn is_connection_refused(&self) -> bool {
             self.as_io()
                 .map(|e| e.kind() == io::ErrorKind::ConnectionRefused)
                 .unwrap_or_default()
         }
 
+        /// Check if the error is from connection aborted.
+        ///
+        /// This is useful to see if the returned error is from the underlying TCP connection.
+        /// This method will be bubbled up with the error, and also be available at the highest
+        /// level.
         pub fn is_connection_aborted(&self) -> bool {
             self.as_io()
                 .map(|e| e.kind() == io::ErrorKind::ConnectionAborted)
                 .unwrap_or_default()
         }
 
+        /// Check if the error is from not connected.
+        ///
+        /// This is useful to see if the returned error is from the underlying TCP connection.
+        /// This method will be bubbled up with the error, and also be available at the highest
+        /// level.
         pub fn is_not_connected(&self) -> bool {
             self.as_io()
                 .map(|e| e.kind() == io::ErrorKind::NotConnected)
                 .unwrap_or_default()
         }
 
+        /// Check if the error is from broken pipe.
+        ///
+        /// This is useful to see if the returned error is from the underlying TCP connection.
+        /// This method will be bubbled up with the error, and also be available at the highest
+        /// level.
         pub fn is_broken_pipe(&self) -> bool {
             self.as_io()
                 .map(|e| e.kind() == io::ErrorKind::BrokenPipe)

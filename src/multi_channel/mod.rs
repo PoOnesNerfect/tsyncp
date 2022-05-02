@@ -257,7 +257,7 @@ where
 
         self.stream_pool
             .start_send_unpin(encoded)
-            .context(SinkSnafu {
+            .context(SinkErrorsSnafu {
                 addr: *self.local_addr(),
             })?;
 
@@ -268,7 +268,7 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        let res = ready!(self.stream_pool.poll_ready_unpin(cx)).context(SinkSnafu {
+        let res = ready!(self.stream_pool.poll_ready_unpin(cx)).context(SinkErrorsSnafu {
             addr: *self.local_addr(),
         });
 
@@ -279,7 +279,7 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        let res = ready!(self.stream_pool.poll_flush_unpin(cx)).context(SinkSnafu {
+        let res = ready!(self.stream_pool.poll_flush_unpin(cx)).context(SinkErrorsSnafu {
             addr: *self.local_addr(),
         });
 
@@ -290,7 +290,7 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        let res = ready!(self.stream_pool.poll_close_unpin(cx)).context(SinkSnafu {
+        let res = ready!(self.stream_pool.poll_close_unpin(cx)).context(SinkErrorsSnafu {
             addr: *self.local_addr(),
         });
 
@@ -317,50 +317,113 @@ pub mod errors {
             backtrace: Backtrace,
         },
         #[snafu(display("[Sink Error] Failed to send item on {addr}"))]
-        SinkError {
+        SinkErrors {
             addr: SocketAddr,
-            source: stream_pool::errors::SinkError,
+            source: stream_pool::errors::SinkErrors,
             backtrace: Backtrace,
         },
+    }
+
+    pub struct SinkErrorIterator<'a, I>
+    where
+        I: Iterator<Item = &'a stream_pool::errors::PollError>,
+    {
+        iter: Option<I>,
+    }
+
+    impl<'a, I> Iterator for SinkErrorIterator<'a, I>
+    where
+        I: Iterator<Item = &'a stream_pool::errors::PollError>,
+    {
+        type Item = &'a stream_pool::errors::PollError;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if let Some(iter) = &mut self.iter {
+                iter.next()
+            } else {
+                None
+            }
+        }
+    }
+
+    pub struct SinkErrorIntoIterator<I>
+    where
+        I: Iterator<Item = stream_pool::errors::PollError>,
+    {
+        iter: Option<I>,
+    }
+
+    impl<I> Iterator for SinkErrorIntoIterator<I>
+    where
+        I: Iterator<Item = stream_pool::errors::PollError>,
+    {
+        type Item = stream_pool::errors::PollError;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            if let Some(iter) = &mut self.iter {
+                iter.next()
+            } else {
+                None
+            }
+        }
     }
 
     impl<E> SinkError<E>
     where
         E: 'static + snafu::Error,
     {
-        pub fn addr(&self) -> &SocketAddr {
+        pub fn local_addr(&self) -> &SocketAddr {
             match self {
-                Self::SinkError { addr, .. } => addr,
+                Self::SinkErrors { addr, .. } => addr,
                 Self::ItemEncode { addr, .. } => addr,
             }
         }
 
-        pub fn as_errors(&self) -> Option<impl Iterator<Item = &stream_pool::errors::PollError>> {
+        pub fn peer_addrs(&self) -> Vec<SocketAddr> {
             match self {
-                Self::SinkError { source, .. } => Some(source.as_errors()),
-                _ => None,
+                Self::SinkErrors { source, .. } => source.peer_addrs(),
+                Self::ItemEncode { .. } => Vec::new(),
             }
         }
 
-        pub fn into_errors(self) -> Option<impl Iterator<Item = stream_pool::errors::PollError>> {
-            match self {
-                Self::SinkError { source, .. } => Some(source.into_errors()),
-                _ => None,
-            }
+        pub fn is_encode_error(&self) -> bool {
+            matches!(self, Self::ItemEncode { .. })
         }
 
-        pub fn as_io_errors(&self) -> Option<impl Iterator<Item = &std::io::Error>> {
-            match self {
-                Self::SinkError { source, .. } => Some(source.as_io_errors()),
-                _ => None,
-            }
+        pub fn is_send_error(&self) -> bool {
+            !self.is_encode_error()
         }
 
-        pub fn into_io_errors(self) -> Option<impl Iterator<Item = std::io::Error>> {
-            match self {
-                Self::SinkError { source, .. } => Some(source.into_io_errors()),
-                _ => None,
-            }
+        pub fn as_sink_errors(
+            &self,
+        ) -> SinkErrorIterator<'_, impl Iterator<Item = &stream_pool::errors::PollError>> {
+            let iter = if let Self::SinkErrors { source, .. } = self {
+                Some(source.iter())
+            } else {
+                None
+            };
+
+            SinkErrorIterator { iter }
+        }
+
+        pub fn into_sink_errors(
+            self,
+        ) -> SinkErrorIntoIterator<impl Iterator<Item = stream_pool::errors::PollError>> {
+            let iter = if let Self::SinkErrors { source, .. } = self {
+                Some(source.into_iter())
+            } else {
+                None
+            };
+
+            SinkErrorIntoIterator { iter }
+        }
+
+        pub fn as_io_errors(&self) -> impl Iterator<Item = &std::io::Error> {
+            self.as_sink_errors().filter_map(|e| e.as_io())
+        }
+
+        pub fn into_io_errors(self) -> impl Iterator<Item = std::io::Error> {
+            self.into_sink_errors().filter_map(|e| e.into_io())
         }
     }
 
@@ -388,11 +451,26 @@ pub mod errors {
     where
         E: snafu::Error,
     {
-        pub fn addr(&self) -> &SocketAddr {
+        pub fn local_addr(&self) -> &SocketAddr {
             match self {
                 Self::StreamError { addr, .. } => addr,
                 Self::ItemDecode { addr, .. } => addr,
             }
+        }
+
+        pub fn peer_addr(&self) -> Option<SocketAddr> {
+            match self {
+                Self::ItemDecode { .. } => None,
+                Self::StreamError { source, .. } => Some(*source.peer_addr()),
+            }
+        }
+
+        pub fn is_decode_error(&self) -> bool {
+            matches!(self, Self::ItemDecode { .. })
+        }
+
+        pub fn is_recv_error(&self) -> bool {
+            !self.is_decode_error()
         }
 
         pub fn as_io(&self) -> Option<&std::io::Error> {
@@ -400,6 +478,22 @@ pub mod errors {
                 Self::StreamError { source, .. } => source.as_io(),
                 _ => None,
             }
+        }
+
+        /// Check if the error is a connection error.
+        ///
+        /// Returns `true` if the error either `reset`, `refused`, `aborted`, 'not connected`, or
+        /// `broken pipe`.
+        ///
+        /// This is useful to see if the returned error is from the underlying TCP connection.
+        /// This method will be bubbled up with the error, and also be available at the highest
+        /// level.
+        pub fn is_connection_error(&self) -> bool {
+            self.is_connection_reset()
+                || self.is_connection_refused()
+                || self.is_connection_aborted()
+                || self.is_not_connected()
+                || self.is_broken_pipe()
         }
 
         pub fn is_connection_reset(&self) -> bool {

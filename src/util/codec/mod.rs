@@ -1,8 +1,7 @@
-//! Contains adaptors from AsyncRead/AsyncWrite to Stream/Sink.
+//! Contains [EncodeMethod] and [DecodeMethod] to generically implement encoding and decoding over
+//! different libraries.
 //!
-//! For more information, check out [tokio_util::codec]
-//!
-//! [tokio_util::codec]: https://docs.rs/tokio-util/latest/tokio_util/codec/index.html
+//! Module also contains already implemented codec to be easily used.
 
 use bytes::{Bytes, BytesMut};
 use std::io;
@@ -10,20 +9,23 @@ use std::io;
 #[cfg(feature = "serde")]
 use serde::{de::DeserializeOwned, Serialize};
 
-/// Trait for encoding methods which converts a given item into bytes.
+/// Trait for encoding a given item into bytes.
 pub trait EncodeMethod<T> {
     type Error: 'static + snafu::Error;
 
     fn encode(data: &T) -> Result<Bytes, Self::Error>;
 }
 
-/// Trait for decoding methods which converts given bytes into an item.
+/// Trait for decoding given bytes into an item.
 pub trait DecodeMethod<T> {
     type Error: 'static + snafu::Error;
 
     fn decode(bytes: BytesMut) -> Result<T, Self::Error>;
 }
 
+/// Unit struct that encodes and decodes empty tuple. Used for sending empty payloads.
+///
+/// `EmptyCodec` only implements traits for empty tuple `()`, and is created mainly for [barrier](crate::barrier) primitives.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EmptyCodec;
 
@@ -63,6 +65,43 @@ pub use json::*;
 mod json {
     use super::*;
 
+    /// Unit struct that encodes and decodes data as json objects.
+    ///
+    /// This implements serializing/deserializing as json using `serde` and `serde_json`.
+    /// Think of it as a light wrapper around `serde_json`.
+    ///
+    /// You can use this codec in any of the primitives for any data structs that implements
+    /// `serde::Serialize` and `serde::Deserialize`.
+    ///
+    /// All primitives already introduces type alias for this codec so you can just use that for simplicity:
+    ///
+    /// ```no_run
+    /// use tsyncp::mpsc;
+    ///
+    /// pub type JsonSender<T> = mpsc::Sender<T, tsyncp::util::codec::JsonCodec>;
+    ///
+    /// pub type JsonReceiver<T, const N: usize = 0> = mpsc::Receiver<T, tsyncp::util::codec::JsonCodec, N>;
+    /// ```
+    ///
+    /// ### Example
+    /// ```no_run
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::mpsc;
+    ///
+    /// #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let rx: mpsc::JsonReceiver<Dummy> = mpsc::receiver_on("localhost:8000").await?;
+    ///     let tx: mpsc::JsonSender<Dummy> = mpsc::sender_to("localhost:8000").await?;
+    ///     Ok(())
+    /// }
+    /// ```
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
     pub struct JsonCodec;
 
@@ -89,6 +128,43 @@ pub use bincode_mod::*;
 mod bincode_mod {
     use super::*;
 
+    /// Unit struct that encodes and decodes data using bincode.
+    ///
+    /// This implements encoding/decoding `bincode` crate.
+    /// Think of it as a light wrapper around `bincode`.
+    ///
+    /// You can use this codec in any of the primitives for any data structs that implements
+    /// `serde::Serialize` and `serde::Deserialize`.
+    ///
+    /// All primitives already introduces type alias for this codec so you can just use that for simplicity:
+    ///
+    /// ```no_run
+    /// use tsyncp::mpsc;
+    ///
+    /// pub type BincodeSender<T> = mpsc::Sender<T, tsyncp::util::codec::BincodeCodec>;
+    ///
+    /// pub type BincodeReceiver<T, const N: usize = 0> = mpsc::Receiver<T, tsyncp::util::codec::BincodeCodec, N>;
+    /// ```
+    ///
+    /// ### Example
+    /// ```no_run
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::mpsc;
+    ///
+    /// #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let rx: mpsc::BincodeReceiver<Dummy> = mpsc::receiver_on("localhost:8000").await?;
+    ///     let tx: mpsc::BincodeSender<Dummy> = mpsc::sender_to("localhost:8000").await?;
+    ///     Ok(())
+    /// }
+    /// ```
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
     pub struct BincodeCodec;
 
@@ -115,6 +191,44 @@ pub use protobuf::*;
 mod protobuf {
     use super::*;
 
+    /// Unit struct that encodes and decodes data as protobuf objects.
+    ///
+    /// This implements serializing/deserializing as protobuf using `prost`.
+    /// Think of it as a light wrapper around `prost`.
+    ///
+    /// You can use this codec in any of the primitives for any data structs that implements
+    /// `prost::Message`.
+    ///
+    /// All primitives already introduces type alias for this codec so you can just use that for simplicity:
+    ///
+    /// ```no_run
+    /// use tsyncp::mpsc;
+    ///
+    /// pub type ProtobufSender<T> = mpsc::Sender<T, tsyncp::util::codec::ProtobufCodec>;
+    ///
+    /// pub type ProtobufReceiver<T, const N: usize = 0> = mpsc::Receiver<T, tsyncp::util::codec::ProtobufCodec, N>;
+    /// ```
+    ///
+    /// ### Example
+    /// ```no_run
+    /// use prost::Message;
+    /// use tsyncp::mpsc;
+    ///
+    /// #[derive(Clone, Message)]
+    /// struct Dummy {
+    ///     #[prost(string, tag = "1")]
+    ///     field1: String,
+    ///     #[prost(uint64, tag = "2")]
+    ///     field2: u64,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let rx: mpsc::ProtobufReceiver<Dummy> = mpsc::receiver_on("localhost:8000").await?;
+    ///     let tx: mpsc::ProtobufSender<Dummy> = mpsc::sender_to("localhost:8000").await?;
+    ///     Ok(())
+    /// }
+    /// ```
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
     pub struct ProtobufCodec;
 

@@ -26,7 +26,7 @@ async fn main() {
 
 async fn try_main() -> Result<()> {
     let sender_on_handle = tokio::spawn(async move {
-        let mut sender: spsc::JsonSender<Dummy> = spsc::send_on(ADDR1).await?;
+        let mut sender: spsc::JsonSender<Dummy> = spsc::sender_on(ADDR1).await?;
         let port = sender.local_addr().port();
 
         let dummy = Dummy {
@@ -43,7 +43,7 @@ async fn try_main() -> Result<()> {
     });
 
     let receiver_to_handle = tokio::spawn(async move {
-        let mut receiver: spsc::JsonReceiver<Dummy> = spsc::recv_to(ADDR1)
+        let mut receiver: spsc::JsonReceiver<Dummy> = spsc::receiver_to(ADDR1)
             .retry(Duration::from_millis(500), 100)
             .await?;
         let port = receiver.local_addr().port();
@@ -56,7 +56,7 @@ async fn try_main() -> Result<()> {
     });
 
     let sender_to_handle = tokio::spawn(async move {
-        let mut sender: spsc::JsonSender<Dummy> = spsc::send_to(ADDR2)
+        let mut sender: spsc::JsonSender<Dummy> = spsc::sender_to(ADDR2)
             .retry(Duration::from_millis(500), 100)
             .await?;
         let port = sender.local_addr().port();
@@ -75,7 +75,7 @@ async fn try_main() -> Result<()> {
     });
 
     let receiver_on_handle = tokio::spawn(async move {
-        let mut receiver: spsc::JsonReceiver<Dummy> = spsc::recv_on(ADDR2).await?;
+        let mut receiver: spsc::JsonReceiver<Dummy> = spsc::receiver_on(ADDR2).await?;
         let port = receiver.local_addr().port();
 
         if let Some(item) = receiver.recv().await {

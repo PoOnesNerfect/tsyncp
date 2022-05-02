@@ -34,7 +34,7 @@ async fn main() {
 async fn try_main() -> Result<()> {
     let broadcast_handle = tokio::spawn(async move {
         let mut tx: broadcast::ProtobufSender<Dummy> =
-            broadcast::send_on(ADDR).limit(LEN).accept_full().await?;
+            broadcast::sender_on(ADDR).limit(LEN).accept_full().await?;
 
         let now = Instant::now();
         for i in 0..COUNT {
@@ -56,7 +56,7 @@ async fn try_main() -> Result<()> {
     let handles = (0..LEN)
         .map(|n| {
             tokio::spawn(async move {
-                let mut rx: broadcast::ProtobufReceiver<Dummy> = broadcast::recv_to(ADDR)
+                let mut rx: broadcast::ProtobufReceiver<Dummy> = broadcast::receiver_to(ADDR)
                     .retry(Duration::from_millis(500), 100)
                     .await?;
 

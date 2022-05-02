@@ -7,7 +7,7 @@ message-passing between threads and tasks. However, there are not many libraries
 that provide similar APIs that can be used over the network.
 
 **Tsyncp** tries to fill the gap by providing the similar APIs (mpsc, broadcast, barrier, etc) over TCP. If you
-have a project where it only has a few services running, and they need to pass some data to each other;
+have a personal project where it only has a few services running, and they need to pass some data to each other;
 instead of setting up a message-broker service, you can use tsyncp to easily pass data between them.
 
 **Tsyncp** also allows customizing different Serialization/Deserialization methods to encode/decode
@@ -39,7 +39,7 @@ Getting started is as easy as:
 ```rust
 use tsyncp::mpsc;
 
-let mut rx: mpsc::JsonReceiver<DummyStruct> = mpsc::recv_on("localhost:8000").await?;
+let mut rx: mpsc::JsonReceiver<DummyStruct> = mpsc::receiver_on("localhost:8000").await?;
 
 rx.accept().await?;
 
@@ -49,14 +49,14 @@ while let Some(Ok(dummy)) = rx.recv().await {
 }
 ```
 
-But you can easily extend it by chaining the futures as:
+But you can easily extend it by chaining futures as below:
 
 ```rust
 use tsyncp::mpsc;
 
-let mut rx: mpsc::JsonReceiver<DummyStruct> = mpsc::recv_on("localhost:8000")
-    .limit(10)                                      // Limit total number of connections to 10.
-    .accept_filtered(5, |a| a.port() % 2 == 0)      // Before returning rx, accept 5 connections where the port value is even.
+let mut rx: mpsc::JsonReceiver<DummyStruct> = mpsc::receiver_on("localhost:8000")
+    .limit(10)                                      // Set total number of allowed connections to 10.
+    .accept_filtered(5, |a| a.port() % 2 == 0)      // Accept 5 connections where the port value is even.
     .set_tcp_nodelay(true)                          // Set tcp nodelay option to true.
     .set_tcp_reuseaddr(true)                        // Set tcp reuseaddr option to true.
     .await?;
@@ -66,7 +66,7 @@ while let (Some(Ok(dummy_bytes, addr)), Ok(accepted_addrs)) = rx
     .as_bytes()                                     // Instead of receiving decoded `DummyStruct`, return raw bytes.
     .with_addr()                                    // Return remote `SocketAddr` along with data.
     .accepting()                                    // While waiting to receive, also accept incoming connections.
-    .limit(5)                                       // Only accept 5 connections. (defaults to receiver's limit if unspecified)
+    .limit(5)                                       // Only accept up to 5 connections. (defaults to receiver's limit if unspecified)
     .await
 {
     println!("received {dummy_bytes:?} from {addr}");
@@ -79,12 +79,14 @@ while let (Some(Ok(dummy_bytes, addr)), Ok(accepted_addrs)) = rx
 }
 ```
 
+I just vomited a whole bunch of chains, but you can just use any chains that fits your neck.
+
 #### mpsc::Sender
 
 ```rust
 use tsyncp::mpsc;
 
-let mut tx: mpsc::JsonSender<DummyStruct> = mpsc::send_to("localhost:8000").await?;
+let mut tx: mpsc::JsonSender<DummyStruct> = mpsc::sender_to("localhost:8000").await?;
 
 let dummy = DummyStruct {
     field1: String::from("hello world"),
@@ -100,7 +102,7 @@ But you can also extend it by chaining the futures as:
 ```rust
 use tsyncp::mpsc;
 
-let mut tx: mpsc::JsonSender<DummyStruct> = mpsc::send_to("localhost:8000")
+let mut tx: mpsc::JsonSender<DummyStruct> = mpsc::sender_to("localhost:8000")
     .retry(Duration::from_millis(500), 100)     // retry connecting to receiver 100 times every 500 ms.
     .set_nodelay(true)                          // set tcp nodelay option to `true`
     .await?;
@@ -114,6 +116,15 @@ tx.send(dummy).await?;
 ```
 
 The [API documentation](https://docs.rs/tsyncp/) has a very detailed guide on how to use the primitives. So please check them out!
+
+## Future Plans
+
+If enough people find this library useful or interesting, I will work primarily on the following features:
+
+-   **Encrypted Streams**: _Tls_ and _Noise_. Technically, this library is already generic enough that it can have any type of bytestreams underneath.
+    So, it should not be that rough implementing options for Tls and Noise streams! (fingers crossed...!)
+-   **Supporting other Encoding/Decoding implementations**: Right now, I'm thinking libraries like _rkyv_ and _speedy_;
+    if anyone has any other options I can look into, please let me know!
 
 **_Note_**: Tsyncp is built on [tokio]; and thus may not be compatible with other async runtimes like async-std.
 

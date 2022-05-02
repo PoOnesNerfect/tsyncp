@@ -1,4 +1,4 @@
-use super::frame_codec::{self, VariedLengthDelimitedCodec};
+use super::frame_codec::VariedLengthDelimitedCodec;
 use super::split::Split;
 use super::Framed;
 use bytes::{Bytes, BytesMut};
@@ -345,12 +345,12 @@ impl<S, const N: usize> StreamPool<S, N> {
         }
     }
 
-    pub(crate) fn drain_sink_res(&mut self) -> Result<(), SinkError> {
-        let mut errors = self.sink_errors.drain(..);
+    pub(crate) fn drain_sink_res(&mut self) -> Result<(), SinkErrors> {
+        let errors = self.sink_errors.drain(..).collect::<Vec<_>>();
 
         // have first error as source
-        if let Some(source) = errors.next() {
-            return Err(SinkError::new(errors.collect(), source));
+        if !errors.is_empty() {
+            return Err(SinkErrors::new(errors));
         } else {
             Ok(())
         }
@@ -407,7 +407,7 @@ impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
                         self.index = (index + 1) % len;
                     }
 
-                    return Poll::Ready(Some((item.context(PollNextSnafu), addr)));
+                    return Poll::Ready(Some((item.context(PollNextSnafu { addr }), addr)));
                 }
                 _ => {}
             }
@@ -422,12 +422,40 @@ impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
 }
 
 impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
+    pub(crate) fn get_indices<Filter>(&self, filter: &Filter) -> Vec<usize>
+    where
+        Filter: Fn(SocketAddr) -> bool,
+    {
+        (0..self.len())
+            .filter(|i| {
+                let (_stream, addr) = self.get(*i).expect("Element should exist with len");
+                filter(*addr)
+            })
+            .collect::<Vec<_>>()
+    }
+
     pub(crate) fn poll_ready_indices(
         &mut self,
         indices: &mut Vec<usize>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<()> {
-        self.poll_indices(indices, |s| s.poll_ready_unpin(cx))
+        // Go in reverse order,
+        // so that, when we encounter an error,
+        // we can swap_remove it and... just flush it away.
+        while let Some(i) = indices.last() {
+            let (stream, addr) = self.get_mut(*i).expect("Element should exist with index");
+            if let Err(e) =
+                ready!(stream.poll_ready_unpin(cx)).context(PollReadySnafu { addr: *addr })
+            {
+                self.swap_remove(*i);
+                self.sink_errors.push(e);
+            }
+
+            // Ready or not, this index is not pending anymore.
+            indices.pop();
+        }
+
+        Poll::Ready(())
     }
 
     pub(crate) fn start_send_filtered<Filter: Fn(SocketAddr) -> bool>(
@@ -454,13 +482,13 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
             .collect::<Vec<_>>();
 
         for i in indices {
-            let (stream, _) = self.get_mut(i).expect("Element should exist with index");
+            let (stream, addr) = self.get_mut(i).expect("Element should exist with index");
 
             // Gotta go fast!
             // Errors never bothered me anyway.
             if let Err(e) = stream
                 .start_send_unpin(item.clone())
-                .context(StartSendSnafu)
+                .context(StartSendSnafu { addr: *addr })
             {
                 self.swap_remove(i);
                 self.sink_errors.push(e);
@@ -475,33 +503,14 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         indices: &mut Vec<usize>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<()> {
-        self.poll_indices(indices, |s| s.poll_flush_unpin(cx))
-    }
-}
-
-impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
-    pub(crate) fn get_indices<Filter>(&self, filter: &Filter) -> Vec<usize>
-    where
-        Filter: Fn(SocketAddr) -> bool,
-    {
-        (0..self.len())
-            .filter(|i| {
-                let (_stream, addr) = self.get(*i).expect("Element should exist with len");
-                filter(*addr)
-            })
-            .collect::<Vec<_>>()
-    }
-
-    fn poll_indices<F>(&mut self, indices: &mut Vec<usize>, mut f: F) -> Poll<()>
-    where
-        F: FnMut(&mut Framed<S>) -> Poll<Result<(), frame_codec::errors::CodecError>>,
-    {
         // Go in reverse order,
         // so that, when we encounter an error,
         // we can swap_remove it and... just flush it away.
         while let Some(i) = indices.last() {
-            let (stream, _) = self.get_mut(*i).expect("Element should exist with index");
-            if let Err(e) = ready!(f(stream)).context(PollIndicesSnafu) {
+            let (stream, addr) = self.get_mut(*i).expect("Element should exist with index");
+            if let Err(e) =
+                ready!(stream.poll_flush_unpin(cx)).context(PollFlushSnafu { addr: *addr })
+            {
                 self.swap_remove(*i);
                 self.sink_errors.push(e);
             }
@@ -512,11 +521,13 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
 
         Poll::Ready(())
     }
+}
 
+impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
     // poll on all streams in the pool, while skipping the ones that already returned ready.
-    fn poll_all<F>(&mut self, mut f: F) -> Poll<Result<(), SinkError>>
+    fn poll_all<F>(&mut self, mut f: F) -> Poll<Result<(), SinkErrors>>
     where
-        F: FnMut(&mut Framed<S>) -> Poll<Result<(), frame_codec::errors::CodecError>>,
+        F: FnMut(&mut Framed<S>, SocketAddr) -> Poll<Result<(), PollError>>,
     {
         let mut len = self.len();
 
@@ -535,11 +546,11 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         while self.index > 0 {
             let i = self.index - 1;
 
-            let (stream, _) = (*self)
+            let (stream, addr) = (*self)
                 .get_mut(i)
                 .expect("stream should be initialized from 0..len");
 
-            if let Err(error) = ready!(f(stream)).context(PollSinkSnafu) {
+            if let Err(error) = ready!(f(stream, *addr)) {
                 self.swap_remove(i);
                 self.sink_errors.push(error);
 
@@ -560,13 +571,16 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
 }
 
 impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
-    type Error = SinkError;
+    type Error = SinkErrors;
 
     fn poll_ready(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        self.poll_all(|s| s.poll_ready_unpin(cx))
+        self.poll_all(|s, addr| {
+            s.poll_ready_unpin(cx)
+                .map_err(|e| PollError::PollReady { addr, source: e })
+        })
     }
 
     fn start_send(mut self: std::pin::Pin<&mut Self>, item: Bytes) -> Result<(), Self::Error> {
@@ -577,11 +591,13 @@ impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
         }
 
         let send = |this: &mut Self, n, t| {
-            let (stream, _) = this
+            let (stream, addr) = this
                 .get_mut(n)
                 .expect("stream should be initialized from 0..len");
 
-            stream.start_send_unpin(t).context(StartSendSnafu)
+            stream
+                .start_send_unpin(t)
+                .context(StartSendSnafu { addr: *addr })
         };
 
         for i in (0..len).rev() {
@@ -605,7 +621,9 @@ impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
         // Only returns error when len is 0, so must return sink_res again later.
-        ready!(self.poll_all(|s| s.poll_flush_unpin(cx)))?;
+        ready!(self.poll_all(|s, addr| s
+            .poll_flush_unpin(cx)
+            .map_err(|e| { PollError::PollFlush { addr, source: e } })))?;
 
         // Vomit all errors collected from `poll_ready`, `start_send` and `poll_flush`.
         Poll::Ready(self.drain_sink_res())
@@ -616,7 +634,9 @@ impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
         // Only returns error when len is 0, so must return sink_res again later.
-        ready!(self.poll_all(|s| s.poll_close_unpin(cx)))?;
+        ready!(self.poll_all(|s, addr| s
+            .poll_close_unpin(cx)
+            .map_err(|e| { PollError::PollClose { addr, source: e } })))?;
 
         // After poll close, drain pool.
         while self.pop().is_some() {}
@@ -629,7 +649,12 @@ impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
 pub mod errors {
     use crate::util::frame_codec;
     use snafu::{Backtrace, GenerateImplicitData, Snafu};
-    use std::io;
+    use std::{
+        error::Error,
+        fmt, io,
+        net::SocketAddr,
+        ops::{Deref, DerefMut},
+    };
 
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
@@ -641,43 +666,83 @@ pub mod errors {
     }
 
     #[derive(Debug, Snafu)]
-    #[snafu(display("[SinkError] Failed to send item in stream_pool"))]
+    #[snafu(display("[SinkErrors] Encountered following errors while sending item:"))]
     #[snafu(visibility(pub(super)))]
-    pub struct SinkError {
-        errors: Vec<PollError>,
-        source: PollError,
+    pub struct SinkErrors {
+        source: SinkErrorsInner,
         backtrace: Backtrace,
     }
 
-    impl SinkError {
-        pub fn new(errors: Vec<PollError>, source: PollError) -> Self {
+    #[derive(Debug)]
+    pub struct SinkErrorsInner {
+        errors: Vec<PollError>,
+    }
+
+    impl Deref for SinkErrorsInner {
+        type Target = Vec<PollError>;
+
+        fn deref(&self) -> &Self::Target {
+            &self.errors
+        }
+    }
+
+    impl DerefMut for SinkErrorsInner {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.errors
+        }
+    }
+
+    impl std::error::Error for SinkErrorsInner {}
+
+    impl fmt::Display for SinkErrorsInner {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            for err in &self.errors {
+                write!(f, "\n- {}\n\n", err)?;
+                write!(f, "  Caused by:\n")?;
+
+                if let Some(source) = err.source() {
+                    let mut i = 0;
+                    let mut error = Some(source);
+
+                    while let Some(e) = error {
+                        write!(f, "     {}: {}\n", i, e)?;
+
+                        i += 1;
+                        error = e.source();
+                    }
+                }
+            }
+
+            Ok(())
+        }
+    }
+
+    impl SinkErrors {
+        pub fn new(errors: Vec<PollError>) -> Self {
             Self {
-                errors,
-                source,
+                source: SinkErrorsInner { errors },
                 backtrace: Backtrace::generate(),
             }
         }
 
-        pub fn as_errors(&self) -> impl Iterator<Item = &PollError> {
-            std::iter::once(&self.source).chain(self.errors.iter())
+        pub fn peer_addrs(&self) -> Vec<SocketAddr> {
+            self.iter().map(|e| e.peer_addr().to_owned()).collect()
         }
 
-        pub fn into_errors(self) -> impl Iterator<Item = PollError> {
-            std::iter::once(self.source).chain(self.errors.into_iter())
+        pub fn iter(&self) -> impl Iterator<Item = &PollError> {
+            self.source.errors.iter()
+        }
+
+        pub fn into_iter(self) -> impl Iterator<Item = PollError> {
+            self.source.errors.into_iter()
         }
 
         pub fn as_io_errors(&self) -> impl Iterator<Item = &std::io::Error> {
-            std::iter::once(&self.source)
-                .chain(self.errors.iter())
-                .map(|e| e.as_io())
-                .filter_map(|e| e)
+            self.iter().filter_map(|e| e.as_io())
         }
 
         pub fn into_io_errors(self) -> impl Iterator<Item = std::io::Error> {
-            std::iter::once(self.source)
-                .chain(self.errors.into_iter())
-                .map(|e| e.into_io())
-                .filter_map(|e| e)
+            self.into_iter().filter_map(|e| e.into_io())
         }
     }
 
@@ -696,34 +761,50 @@ pub mod errors {
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
     pub enum PollError {
-        #[snafu(display("[PollError] Error in start_send"))]
+        #[snafu(display("[PollError] Error start sending to {addr}"))]
         StartSend {
+            addr: SocketAddr,
             source: frame_codec::errors::CodecError,
-            backtrace: Backtrace,
         },
-        #[snafu(display("[PollError] Error in poll_indices"))]
-        PollIndices {
+        #[snafu(display("[PollError] Error polling ready for {addr}"))]
+        PollReady {
+            addr: SocketAddr,
             source: frame_codec::errors::CodecError,
-            backtrace: Backtrace,
         },
-        #[snafu(display("[PollError] Error in poll_all"))]
-        PollSink {
+        #[snafu(display("[PollError] Error flushing buffer to {addr}"))]
+        PollFlush {
+            addr: SocketAddr,
             source: frame_codec::errors::CodecError,
-            backtrace: Backtrace,
+        },
+        #[snafu(display("[PollError] Error closing connection to {addr}"))]
+        PollClose {
+            addr: SocketAddr,
+            source: frame_codec::errors::CodecError,
         },
         #[snafu(display("[StreamPoolError] Failed poll_next in stream_pool"))]
         PollNext {
+            addr: SocketAddr,
             source: frame_codec::errors::CodecError,
-            backtrace: Backtrace,
         },
     }
 
     impl PollError {
+        pub fn peer_addr(&self) -> &SocketAddr {
+            match self {
+                Self::StartSend { addr, .. } => addr,
+                Self::PollReady { addr, .. } => addr,
+                Self::PollFlush { addr, .. } => addr,
+                Self::PollClose { addr, .. } => addr,
+                Self::PollNext { addr, .. } => addr,
+            }
+        }
+
         pub fn as_io(&self) -> Option<&std::io::Error> {
             match self {
                 Self::StartSend { source, .. } => source.as_io(),
-                Self::PollIndices { source, .. } => source.as_io(),
-                Self::PollSink { source, .. } => source.as_io(),
+                Self::PollReady { source, .. } => source.as_io(),
+                Self::PollFlush { source, .. } => source.as_io(),
+                Self::PollClose { source, .. } => source.as_io(),
                 Self::PollNext { source, .. } => source.as_io(),
             }
         }
@@ -731,10 +812,27 @@ pub mod errors {
         pub fn into_io(self) -> Option<std::io::Error> {
             match self {
                 Self::StartSend { source, .. } => source.into_io(),
-                Self::PollIndices { source, .. } => source.into_io(),
-                Self::PollSink { source, .. } => source.into_io(),
+                Self::PollReady { source, .. } => source.into_io(),
+                Self::PollFlush { source, .. } => source.into_io(),
+                Self::PollClose { source, .. } => source.into_io(),
                 Self::PollNext { source, .. } => source.into_io(),
             }
+        }
+
+        /// Check if the error is a connection error.
+        ///
+        /// Returns `true` if the error either `reset`, `refused`, `aborted`, 'not connected`, or
+        /// `broken pipe`.
+        ///
+        /// This is useful to see if the returned error is from the underlying TCP connection.
+        /// This method will be bubbled up with the error, and also be available at the highest
+        /// level.
+        pub fn is_connection_error(&self) -> bool {
+            self.is_connection_reset()
+                || self.is_connection_refused()
+                || self.is_connection_aborted()
+                || self.is_not_connected()
+                || self.is_broken_pipe()
         }
 
         pub fn is_connection_reset(&self) -> bool {
