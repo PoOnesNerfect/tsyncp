@@ -11,7 +11,7 @@ const LEN: usize = 10;
 
 const ADDR: &str = "localhost:8000";
 
-#[derive(Clone, Message)]
+#[derive(Message)]
 struct Dummy {
     #[prost(string, tag = "1")]
     field1: String,
@@ -33,14 +33,15 @@ async fn main() {
 
 async fn try_main() -> Result<()> {
     let mc = tokio::spawn(async move {
-        let mc: multi_channel::ProtobufChannel<Dummy> = multi_channel::channel_on(ADDR)
+        let mc: multi_channel::ProstChannel<Dummy> = multi_channel::channel_on(ADDR)
             .limit(LEN)
-            .accept_full()
+            .accept()
+            .to_limit()
             .await?;
 
         let (rx, tx) = mc.split();
-        let mut rx: mpsc::ProtobufReceiver<Dummy> = rx;
-        let mut tx: broadcast::ProtobufSender<Dummy> = tx;
+        let mut rx: mpsc::ProstReceiver<Dummy> = rx;
+        let mut tx: broadcast::ProstSender<Dummy> = tx;
 
         // broadcast data concurrently
         let tx_handle = tokio::spawn(async move {
@@ -89,7 +90,7 @@ async fn try_main() -> Result<()> {
     let handles = (0..LEN)
         .map(|n| {
             tokio::spawn(async move {
-                let channel: channel::ProtobufChannel<Dummy> = channel::channel_to(ADDR)
+                let channel: channel::ProstChannel<Dummy> = channel::channel_to(ADDR)
                     .retry(Duration::from_millis(500), 100)
                     .await?;
 

@@ -1,5 +1,5 @@
 use super::{Receiver, Sender};
-use crate::util::{accept::Accept, listener::WriteListener, split::Split};
+use crate::util::{listener::WriteListener, Accept, Split};
 use crate::{channel, multi_channel};
 use futures::{ready, Future};
 use pin_project::pin_project;
@@ -29,7 +29,6 @@ pub(crate) fn new_sender<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    impl Clone + Fn(SocketAddr) -> bool,
     impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E>>>,
 > {
     SenderBuilderFuture {
@@ -41,7 +40,7 @@ pub(crate) fn new_sender<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
 #[pin_project]
 pub struct ReceiverBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
-    fut: channel::builder::ChannelBuilderFuture<A, T, E, Filter, Fut, S>,
+    fut: channel::builder::BuilderFuture<A, T, E, Filter, Fut, S>,
 }
 
 impl<A, T, E, Filter, Fut> ReceiverBuilderFuture<A, T, E, Filter, Fut>
@@ -197,91 +196,66 @@ where
 
 #[derive(Debug)]
 #[pin_project]
-pub struct SenderBuilderFuture<A, T, E, Filter, Fut, const N: usize = 0, L = TcpListener>
+pub struct SenderBuilderFuture<A, T, E, Fut, const N: usize = 0, L = TcpListener>
 where
-    Filter: Fn(SocketAddr) -> bool,
     Fut: Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N, L>>>,
     L: Accept,
 {
     #[pin]
-    fut: multi_channel::builder::ChannelBuilderFuture<A, T, E, Filter, Fut, N, L>,
+    fut: multi_channel::builder::BuilderFuture<A, T, E, Fut, N, L>,
 }
 
-impl<
-        A,
-        T,
-        E,
-        Filter: Clone + Fn(SocketAddr) -> bool,
-        Fut: Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
-        const N: usize,
-    > SenderBuilderFuture<A, T, E, Filter, Fut, N>
+impl<A, T, E, Fut, const N: usize, L> SenderBuilderFuture<A, T, E, Fut, N, L>
 where
     A: 'static + Send + Clone + ToSocketAddrs,
+    L: Accept,
+    L::Output: Split,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
+    Fut: Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N, L>>>,
 {
+    /// Before returning a [Sender], first accept a connection, or a given number of connections.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: broadcast::JsonSender<Dummy> = broadcast::sender_on("localhost:8000")
+    ///         .accept()
+    ///         .num(10)             // accept 10 connections before returning.
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn accept(
         self,
-        accept: usize,
-    ) -> SenderBuilderFuture<
-        A,
+    ) -> multi_channel::builder::AcceptBuilderFuture<
+        Self,
+        Sender<T, E, N, WriteListener<L>>,
         T,
         E,
-        Filter,
-        impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
         N,
+        WriteListener<L>,
+        impl FnMut(SocketAddr),
+        impl FnMut(SocketAddr) -> bool,
     > {
-        SenderBuilderFuture {
-            fut: self.fut.accept(accept),
-        }
+        multi_channel::builder::AcceptBuilderFuture::new(self, |_| {}, |_| true)
     }
+}
 
-    pub fn accept_full(
-        self,
-    ) -> SenderBuilderFuture<
-        A,
-        T,
-        E,
-        Filter,
-        impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
-        N,
-    > {
-        SenderBuilderFuture {
-            fut: self.fut.accept_full(),
-        }
-    }
-
-    pub fn accept_filtered<const M: usize, Filter2: Clone + Fn(SocketAddr) -> bool>(
-        self,
-        accept: usize,
-        filter: Filter2,
-    ) -> SenderBuilderFuture<
-        A,
-        T,
-        E,
-        Filter2,
-        impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, M>>>,
-        M,
-    > {
-        SenderBuilderFuture {
-            fut: self.fut.accept_filtered(accept, filter),
-        }
-    }
-
-    pub fn accept_filtered_full<const M: usize, Filter2: Clone + Fn(SocketAddr) -> bool>(
-        self,
-        filter: Filter2,
-    ) -> SenderBuilderFuture<
-        A,
-        T,
-        E,
-        Filter2,
-        impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, M>>>,
-        M,
-    > {
-        SenderBuilderFuture {
-            fut: self.fut.accept_filtered_full(filter),
-        }
-    }
-
+impl<A, T, E, Fut, const N: usize> SenderBuilderFuture<A, T, E, Fut, N>
+where
+    A: 'static + Send + Clone + ToSocketAddrs,
+    Fut: Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
+{
     pub fn limit(
         self,
         limit: usize,
@@ -289,7 +263,6 @@ where
         A,
         T,
         E,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
         N,
     > {
@@ -304,7 +277,6 @@ where
         A,
         T,
         E,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, M>>>,
         M,
     > {
@@ -320,7 +292,6 @@ where
         A,
         T,
         E,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
         N,
     > {
@@ -341,7 +312,6 @@ where
         A,
         T,
         E,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
         N,
     > {
@@ -357,7 +327,6 @@ where
         A,
         T,
         E,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
         N,
     > {
@@ -373,7 +342,6 @@ where
         A,
         T,
         E,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
         N,
     > {
@@ -389,7 +357,6 @@ where
         A,
         T,
         E,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
         N,
     > {
@@ -405,7 +372,6 @@ where
         A,
         T,
         E,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
         N,
     > {
@@ -421,7 +387,6 @@ where
         A,
         T,
         E,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
         N,
     > {
@@ -431,10 +396,8 @@ where
     }
 }
 
-impl<A, T, E, Filter, Fut, const N: usize, L> Future
-    for SenderBuilderFuture<A, T, E, Filter, Fut, N, L>
+impl<A, T, E, Fut, const N: usize, L> Future for SenderBuilderFuture<A, T, E, Fut, N, L>
 where
-    Filter: Fn(SocketAddr) -> bool,
     Fut: Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N, L>>>,
     L: Accept,
     L::Output: Split,

@@ -1,3 +1,11 @@
+//! Contains [BuilderFuture] which builds [channel::Channel](super::Channel) when `.await`ed.
+//!
+//! [BuilderFuture] is returned by [channel_on](super::channel_on) or [channel_to](super::channel_to) function without awaiting it.
+//!
+//! Before awaiting the future, you can chain other methods on it to configure the Channel.
+//!
+//! To see all available configurations, see [BuilderFuture].
+
 use super::Channel;
 use crate::util::{frame_codec::VariedLengthDelimitedCodec, Framed};
 use errors::*;
@@ -17,7 +25,7 @@ pub type Result<T, E = BuilderError> = std::result::Result<T, E>;
 pub(crate) fn new<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     addr: A,
     listening: bool,
-) -> ChannelBuilderFuture<
+) -> BuilderFuture<
     A,
     T,
     E,
@@ -29,7 +37,7 @@ pub(crate) fn new<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     let filter = |_| true;
     let tcp_settings = TcpSettings::default();
 
-    ChannelBuilderFuture {
+    BuilderFuture {
         addr: addr.clone(),
         listening,
         max_retries,
@@ -48,9 +56,40 @@ pub(crate) fn new<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     }
 }
 
+/// Future used to configure and build [Channel](super::Channel).
+///
+/// Use [channel_on](super::channel_on) or [channel_to](super::channel_to)
+/// function to create the [BuilderFuture].
+///
+/// You can chain any number of configurations to the future:
+///
+/// ```no_run
+/// use tsyncp::channel;
+/// use serde::{Serialize, Deserialize};
+/// use std::time::Duration;
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy;
+///
+/// #[tokio::main]
+/// async fn main() -> color_eyre::Result<()> {
+///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_on("localhost:8000")
+///         .retry(Duration::from_millis(500), 100)
+///         .set_tcp_linger(Some(Duration::from_millis(10_000)))
+///         .set_tcp_ttl(60_000)
+///         .set_tcp_nodelay(true)
+///         .set_tcp_reuseaddr(true)
+///         .set_tcp_reuseport(true)
+///         .set_tcp_send_buffer_size(8 * 1024 * 1024)
+///         .set_tcp_recv_buffer_size(8 * 1024 * 1024)
+///         .await?;
+///
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 #[pin_project]
-pub struct ChannelBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
+pub struct BuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     addr: A,
     listening: bool,
     max_retries: Option<usize>,
@@ -73,27 +112,70 @@ struct TcpSettings {
     ttl: Option<u32>,
 }
 
-impl<A, T, E, Filter, Fut> ChannelBuilderFuture<A, T, E, Filter, Fut>
+impl<A, T, E, Filter, Fut> BuilderFuture<A, T, E, Filter, Fut>
 where
     A: 'static + Clone + Send + ToSocketAddrs,
     Filter: Clone + Fn(SocketAddr) -> bool,
 {
+    /// Retry connecting to remote address for `max_retries` with the interval
+    /// `retry_sleep_duration`.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::channel;
+    /// use serde::{Serialize, Deserialize};
+    /// use std::time::Duration;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_to("localhost:8000")
+    ///         .retry(Duration::from_millis(500), 100)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn retry(
         mut self,
         retry_sleep_duration: Duration,
         max_retries: usize,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
+    ) -> BuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.max_retries.replace(max_retries);
         self.retry_sleep_duration = retry_sleep_duration;
 
         self.refresh()
     }
 
+    /// When accepting a connection, filter by the given closure.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::channel;
+    /// use serde::{Serialize, Deserialize};
+    /// use std::time::Duration;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_on("localhost:8000")
+    ///         .filter(|a| a.port() % 2 == 0)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn filter<Filter2: Clone + Fn(SocketAddr) -> bool>(
         self,
         filter: Filter2,
-    ) -> ChannelBuilderFuture<A, T, E, Filter2, impl Future<Output = Result<Channel<T, E>>>> {
-        let ChannelBuilderFuture {
+    ) -> BuilderFuture<A, T, E, Filter2, impl Future<Output = Result<Channel<T, E>>>> {
+        let BuilderFuture {
             addr,
             listening,
             max_retries,
@@ -102,7 +184,7 @@ where
             ..
         } = self;
 
-        ChannelBuilderFuture {
+        BuilderFuture {
             addr: addr.clone(),
             listening,
             max_retries,
@@ -121,15 +203,57 @@ where
         }
     }
 
+    /// Set tcp reuseaddr for the connection made on this channel.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_to("localhost:8000")
+    ///         .set_tcp_reuseaddr(true)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_reuseaddr(
         mut self,
         reuseaddr: bool,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
+    ) -> BuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.reuseaddr.replace(reuseaddr);
 
         self.refresh()
     }
 
+    /// Set tcp reuseport for the connection made on this channel.
+    ///
+    /// *Warning:* only available to unix targets excluding "solaris" and "illumos".
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_to("localhost:8000")
+    ///         .set_tcp_reuseport(true)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
     #[cfg_attr(
         docsrs,
@@ -138,52 +262,153 @@ where
     pub fn set_tcp_reuseport(
         mut self,
         reuseport: bool,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
+    ) -> BuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.reuseport.replace(reuseport);
 
         self.refresh()
     }
 
+    /// Set tcp linger for the connection made on this channel.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::channel;
+    /// use serde::{Serialize, Deserialize};
+    /// use std::time::Duration;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_to("localhost:8000")
+    ///         .set_tcp_linger(Some(Duration::from_millis(10_000)))
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_linger(
         mut self,
         dur: Option<Duration>,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
+    ) -> BuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.linger.replace(dur);
 
         self.refresh()
     }
 
+    /// Set tcp nodelay for the connection made on this channel.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_on("localhost:8000")
+    ///         .set_tcp_nodelay(true)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_nodelay(
         mut self,
         nodelay: bool,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
+    ) -> BuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.nodelay.replace(nodelay);
 
         self.refresh()
     }
 
+    /// Set tcp ttl for the connection made on this channel.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_to("localhost:8000")
+    ///         .set_tcp_ttl(60_000)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_ttl(
         mut self,
         ttl: u32,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
+    ) -> BuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.ttl.replace(ttl);
 
         self.refresh()
     }
 
+    /// Set tcp recv_buffer_size for the connection made on this channel.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_on("localhost:8000")
+    ///         .set_tcp_recv_buffer_size(8 * 1024 * 1024)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_recv_buffer_size(
         mut self,
         size: u32,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
+    ) -> BuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.recv_buffer_size.replace(size);
 
         self.refresh()
     }
 
+    /// Set tcp send_buffer_size for the connection made on this channel.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_on("localhost:8000")
+    ///         .set_tcp_send_buffer_size(8 * 1024 * 1024)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_send_buffer_size(
         mut self,
         size: u32,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
+    ) -> BuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
         self.tcp_settings.send_buffer_size.replace(size);
 
         self.refresh()
@@ -191,8 +416,8 @@ where
 
     fn refresh(
         self,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
-        let ChannelBuilderFuture {
+    ) -> BuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E>>>> {
+        let BuilderFuture {
             addr,
             listening,
             max_retries,
@@ -202,7 +427,7 @@ where
             ..
         } = self;
 
-        ChannelBuilderFuture {
+        BuilderFuture {
             addr: addr.clone(),
             listening,
             max_retries,
@@ -223,7 +448,7 @@ where
 }
 
 impl<A, T, E, Filter, Fut: Future<Output = Result<Channel<T, E, S>>>, S> Future
-    for ChannelBuilderFuture<A, T, E, Filter, Fut, S>
+    for BuilderFuture<A, T, E, Filter, Fut, S>
 {
     type Output = Result<Channel<T, E, S>>;
 

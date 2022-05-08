@@ -1,7 +1,15 @@
+//! Contains [BuilderFuture] which builds [multi_channel::Channel](super::Channel) when `.await`ed.
+//!
+//! [BuilderFuture] is returned by [channel_on](super::channel_on) function without awaiting it.
+//!
+//! Before awaiting the future, you can chain other methods on it to configure the Channel.
+//!
+//! To see all available configurations, see [BuilderFuture].
+
 use super::Channel;
-use crate::util::{accept::Accept, stream_pool::StreamPool, TcpStreamSettings};
+use crate::util::{stream_pool::StreamPool, Accept, TcpStreamSettings};
 use errors::*;
-use futures::Future;
+use futures::{ready, Future};
 use pin_project::pin_project;
 use snafu::{Backtrace, ResultExt};
 use std::io;
@@ -16,40 +24,65 @@ pub type Result<T, E = BuilderError> = std::result::Result<T, E>;
 
 pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
     local_addr: A,
-) -> ChannelBuilderFuture<
-    A,
-    T,
-    E,
-    impl Clone + Fn(SocketAddr) -> bool,
-    impl Future<Output = Result<Channel<T, E>>>,
-> {
-    let filter = |_| true;
+) -> BuilderFuture<A, T, E, impl Future<Output = Result<Channel<T, E>>>> {
     let tcp_settings = TcpSettings::default();
+    let limit = None;
 
-    ChannelBuilderFuture {
+    BuilderFuture {
         local_addr: local_addr.clone(),
         tcp_settings,
-        limit: None,
-        accept: 0,
-        fut: build_tcp_channel::<A, T, E, 0, _>(local_addr, None, 0, tcp_settings, filter.clone()),
-        filter,
+        limit,
+        fut: build_channel::<A, T, E, 0>(local_addr, limit, tcp_settings),
         _phantom: PhantomData,
     }
 }
 
+/// Future used to configure and build [Channel](super::Channel).
+///
+/// Use [channel_on](super::channel_on) function to create the [BuilderFuture].
+///
+/// You can chain any number of configurations to the future:
+///
+/// ```no_run
+/// use tsyncp::multi_channel;
+/// use serde::{Serialize, Deserialize};
+/// use std::time::Duration;
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy;
+///
+/// #[tokio::main]
+/// async fn main() -> color_eyre::Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+///         .limit(20)              // limit the total number of possible connections to 20.
+///         .accept(10)             // accept 10 connections before returning.
+///         .set_tcp_linger(Some(Duration::from_millis(10_000)))
+///         .set_tcp_ttl(60_000)
+///         .set_tcp_nodelay(true)
+///         .set_tcp_reuseaddr(true)
+///         .set_tcp_reuseport(true)
+///         .set_tcp_send_buffer_size(8 * 1024 * 1024)
+///         .set_tcp_recv_buffer_size(8 * 1024 * 1024)
+///         .await?;
+///
+///     Ok(())
+/// }
+/// ```
+///
+/// However, there are some exclusive futures:
+/// - You can only use one of [BuilderFuture::accept], [BuilderFuture::accept_to_limit], [BuilderFuture::accept_filter],
+/// and [BuilderFuture::accept_to_limit_filter].
+/// - You can only use one of [BuilderFuture::limit] and [BuilderFuture::limit_const].
 #[derive(Debug)]
 #[pin_project]
-pub struct ChannelBuilderFuture<A, T, E, Filter, Fut, const N: usize = 0, L = TcpListener>
+pub struct BuilderFuture<A, T, E, Fut, const N: usize = 0, L = TcpListener>
 where
-    Filter: Fn(SocketAddr) -> bool,
     Fut: Future<Output = Result<Channel<T, E, N, L>>>,
     L: Accept,
 {
     local_addr: A,
     limit: Option<usize>,
-    accept: usize,
     tcp_settings: TcpSettings,
-    filter: Filter,
     #[pin]
     fut: Fut,
     _phantom: PhantomData<(T, E)>,
@@ -65,110 +98,169 @@ struct TcpSettings {
     stream_settings: TcpStreamSettings,
 }
 
-impl<
-        A: 'static + Send + Clone + ToSocketAddrs,
+impl<A, T, E, Fut, const N: usize, L> BuilderFuture<A, T, E, Fut, N, L>
+where
+    A: 'static + Send + Clone + ToSocketAddrs,
+    L: Accept,
+    Fut: Future<Output = Result<Channel<T, E, N, L>>>,
+{
+    /// Before returning a [Channel], first accept the given number of connections.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .accept(10)             // accept 10 connections before returning.
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn accept(
+        self,
+    ) -> AcceptBuilderFuture<
+        Self,
+        Channel<T, E, N, L>,
         T,
         E,
-        Filter: Clone + Fn(SocketAddr) -> bool,
-        Fut: Future<Output = Result<Channel<T, E, N>>>,
-        const N: usize,
-    > ChannelBuilderFuture<A, T, E, Filter, Fut, N>
+        N,
+        L,
+        impl FnMut(SocketAddr),
+        impl FnMut(SocketAddr) -> bool,
+    > {
+        AcceptBuilderFuture::new(self, |_| {}, |_| true)
+    }
+}
+
+impl<A, T, E, Fut, const N: usize> BuilderFuture<A, T, E, Fut, N>
+where
+    A: 'static + Send + Clone + ToSocketAddrs,
+    Fut: Future<Output = Result<Channel<T, E, N>>>,
 {
-    pub fn accept(
-        mut self,
-        accept: usize,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
-    {
-        self.accept = accept;
-
-        self.refresh()
-    }
-
-    pub fn accept_full(
-        mut self,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
-    {
-        if N > 0 {
-            self.accept = N;
-        } else if let Some(limit) = self.limit {
-            self.accept = limit;
-        }
-
-        self.refresh()
-    }
-
-    pub fn accept_filtered<const M: usize, Filter2: Clone + Fn(SocketAddr) -> bool>(
-        self,
-        accept: usize,
-        filter: Filter2,
-    ) -> ChannelBuilderFuture<A, T, E, Filter2, impl Future<Output = Result<Channel<T, E, M>>>, M>
-    {
-        let ChannelBuilderFuture {
-            local_addr,
-            limit,
-            tcp_settings,
-            ..
-        } = self;
-
-        ChannelBuilderFuture {
-            local_addr: local_addr.clone(),
-            tcp_settings,
-            limit,
-            accept,
-            fut: build_tcp_channel::<A, T, E, M, Filter2>(
-                local_addr,
-                limit,
-                accept,
-                tcp_settings,
-                filter.clone(),
-            ),
-            filter,
-            _phantom: PhantomData,
-        }
-    }
-
-    pub fn accept_filtered_full<const M: usize, Filter2: Clone + Fn(SocketAddr) -> bool>(
-        mut self,
-        filter: Filter2,
-    ) -> ChannelBuilderFuture<A, T, E, Filter2, impl Future<Output = Result<Channel<T, E, M>>>, M>
-    {
-        if M > 0 {
-            self.accept = N;
-        } else if let Some(limit) = self.limit {
-            self.accept = limit;
-        }
-
-        let accept = self.accept;
-        self.accept_filtered(accept, filter)
-    }
-
+    /// Limit the total number of connections this channel can have.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .limit(10)                              // limit the total number of possible connections to 10.
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn limit(
         mut self,
         limit: usize,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
-    {
+    ) -> BuilderFuture<A, T, E, impl Future<Output = Result<Channel<T, E, N>>>, N> {
         self.limit.replace(limit);
 
         self.refresh()
     }
 
+    /// Limit the total number of connections this channel can have using const generic usize value.
+    ///
+    /// Use this method if you want to use an array instead of a vec for the [connection pool](crate::util::stream_pool::StreamPool)
+    /// that handles all the connections.
+    /// Using an array on the stack may improve performance by reducing access time to the streams.
+    ///
+    /// For more information about using an array or vec, see [StreamPool](crate::util::stream_pool::StreamPool).
+    ///
+    /// If you use this method, you must specify this value as the second paramter in the type
+    /// specifier, as shown below.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy, 10> = multi_channel::channel_on("localhost:8000")
+    ///         .limit_const::<10>()                //     ^--- this value must be set. Can be `_`.
+    ///         .accept_to_limit()                      // accept up to the limit (10).
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn limit_const<const M: usize>(
         self,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, M>>>, M>
-    {
+    ) -> BuilderFuture<A, T, E, impl Future<Output = Result<Channel<T, E, M>>>, M> {
         self.refresh()
     }
 
+    /// Set tcp reuseaddr for all the connections made on this channel.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .set_tcp_reuseaddr(true)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_reuseaddr(
         mut self,
         reuseaddr: bool,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
-    {
+    ) -> BuilderFuture<A, T, E, impl Future<Output = Result<Channel<T, E, N>>>, N> {
         self.tcp_settings.reuseaddr.replace(reuseaddr);
 
         self.refresh()
     }
 
+    /// Set tcp reuseport for all the connections made on this channel.
+    ///
+    /// *Warning:* only available to unix targets excluding "solaris" and "illumos".
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .set_tcp_reuseport(true)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
     #[cfg_attr(
         docsrs,
@@ -177,58 +269,153 @@ impl<
     pub fn set_tcp_reuseport(
         mut self,
         reuseport: bool,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
-    {
+    ) -> BuilderFuture<A, T, E, impl Future<Output = Result<Channel<T, E, N>>>, N> {
         self.tcp_settings.reuseport.replace(reuseport);
 
         self.refresh()
     }
 
+    /// Set tcp linger for all the connections made on this channel.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    /// use std::time::Duration;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .set_tcp_linger(Some(Duration::from_millis(10_000)))
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_linger(
         mut self,
         dur: Option<Duration>,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
-    {
+    ) -> BuilderFuture<A, T, E, impl Future<Output = Result<Channel<T, E, N>>>, N> {
         self.tcp_settings.linger.replace(dur);
 
         self.refresh()
     }
 
+    /// Set tcp nodelay for all the connections made on this channel.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .set_tcp_nodelay(true)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_nodelay(
         mut self,
         nodelay: bool,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
-    {
+    ) -> BuilderFuture<A, T, E, impl Future<Output = Result<Channel<T, E, N>>>, N> {
         self.tcp_settings.stream_settings.nodelay.replace(nodelay);
 
         self.refresh()
     }
 
+    /// Set tcp ttl for all the connections made on this channel.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .set_tcp_ttl(60_000)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_ttl(
         mut self,
         ttl: u32,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
-    {
+    ) -> BuilderFuture<A, T, E, impl Future<Output = Result<Channel<T, E, N>>>, N> {
         self.tcp_settings.stream_settings.ttl.replace(ttl);
 
         self.refresh()
     }
 
+    /// Set tcp recv_buffer_size for all the connections made on this channel.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .set_tcp_recv_buffer_size(8 * 1024 * 1024)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_recv_buffer_size(
         mut self,
         size: u32,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
-    {
+    ) -> BuilderFuture<A, T, E, impl Future<Output = Result<Channel<T, E, N>>>, N> {
         self.tcp_settings.recv_buffer_size.replace(size);
 
         self.refresh()
     }
 
+    /// Set tcp send_buffer_size for all the connections made on this channel.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .set_tcp_send_buffer_size(8 * 1024 * 1024)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_send_buffer_size(
         mut self,
         size: u32,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, N>>>, N>
-    {
+    ) -> BuilderFuture<A, T, E, impl Future<Output = Result<Channel<T, E, N>>>, N> {
         self.tcp_settings.send_buffer_size.replace(size);
 
         self.refresh()
@@ -236,39 +423,26 @@ impl<
 
     fn refresh<const M: usize>(
         self,
-    ) -> ChannelBuilderFuture<A, T, E, Filter, impl Future<Output = Result<Channel<T, E, M>>>, M>
-    {
-        let ChannelBuilderFuture {
+    ) -> BuilderFuture<A, T, E, impl Future<Output = Result<Channel<T, E, M>>>, M> {
+        let BuilderFuture {
             local_addr,
             tcp_settings,
             limit,
-            accept,
-            filter,
             ..
         } = self;
 
-        ChannelBuilderFuture {
+        BuilderFuture {
             local_addr: local_addr.clone(),
             tcp_settings,
             limit,
-            accept,
-            fut: build_tcp_channel::<A, T, E, M, Filter>(
-                local_addr,
-                limit,
-                accept,
-                tcp_settings,
-                filter.clone(),
-            ),
-            filter,
+            fut: build_channel::<A, T, E, M>(local_addr, limit, tcp_settings),
             _phantom: PhantomData,
         }
     }
 }
 
-impl<A, T, E, Filter, Fut, const N: usize, L> Future
-    for ChannelBuilderFuture<A, T, E, Filter, Fut, N, L>
+impl<A, T, E, Fut, const N: usize, L> Future for BuilderFuture<A, T, E, Fut, N, L>
 where
-    Filter: Fn(SocketAddr) -> bool,
     Fut: Future<Output = Result<Channel<T, E, N, L>>>,
     L: Accept,
 {
@@ -279,19 +453,155 @@ where
     }
 }
 
-async fn build_tcp_channel<
-    A: 'static + Send + ToSocketAddrs,
-    T,
-    E,
-    const N: usize,
-    Filter: Fn(SocketAddr) -> bool,
->(
+#[derive(Debug)]
+#[pin_project]
+pub struct AcceptBuilderFuture<Fut, C, T, E, const N: usize, L, H, F> {
+    #[pin]
+    fut: Fut,
+    num: usize,
+    to_limit: bool,
+    handle: H,
+    filter: F,
+    channel: Option<C>,
+    _phantom: PhantomData<(T, E, L)>,
+}
+
+impl<T, C, E, Fut, const N: usize, L, H, F> AcceptBuilderFuture<Fut, C, T, E, N, L, H, F> {
+    pub(crate) fn new(fut: Fut, handle: H, filter: F) -> Self {
+        Self {
+            fut,
+            num: 1,
+            to_limit: false,
+            handle,
+            filter,
+            channel: None,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn num(mut self, num: usize) -> Self {
+        self.num = num;
+        self.to_limit = false;
+
+        self
+    }
+
+    pub fn to_limit(mut self) -> Self {
+        self.to_limit = true;
+
+        self
+    }
+
+    pub fn handle<H2>(self, handle: H2) -> AcceptBuilderFuture<Fut, C, T, E, N, L, H2, F>
+    where
+        H2: FnMut(SocketAddr),
+    {
+        let Self {
+            fut,
+            num,
+            to_limit,
+            filter,
+            channel,
+            ..
+        } = self;
+
+        AcceptBuilderFuture {
+            fut,
+            num,
+            to_limit,
+            handle,
+            filter,
+            channel,
+            _phantom: PhantomData,
+        }
+    }
+
+    pub fn filter<F2>(self, filter: F2) -> AcceptBuilderFuture<Fut, C, T, E, N, L, H, F2>
+    where
+        F2: FnMut(SocketAddr) -> bool,
+    {
+        let Self {
+            fut,
+            num,
+            to_limit,
+            handle,
+            channel,
+            ..
+        } = self;
+
+        AcceptBuilderFuture {
+            fut,
+            num,
+            to_limit,
+            handle,
+            filter,
+            channel,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T, C, E, Fut, const N: usize, L, H, F> Future for AcceptBuilderFuture<Fut, C, T, E, N, L, H, F>
+where
+    Fut: Future<Output = Result<C>>,
+    C: AsMut<Channel<T, E, N, L>>,
+    L: Accept,
+    H: FnMut(SocketAddr),
+    F: FnMut(SocketAddr) -> bool,
+{
+    type Output = Result<C, AcceptingError<L::Error>>;
+
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+
+        if let Some(channel) = this.channel {
+            let channel = channel.as_mut();
+            let num = this
+                .to_limit
+                .then(|| channel.limit())
+                .flatten()
+                .unwrap_or(*this.num);
+
+            while channel.len() < num {
+                match ready!(channel.listener.poll_accept(&channel.stream_config, cx)) {
+                    Ok((stream, addr)) => {
+                        if (this.filter)(addr) {
+                            channel
+                                .stream_pool
+                                .push_stream(stream, addr)
+                                .expect("limit is checked above");
+
+                            (this.handle)(addr);
+                        }
+                    }
+                    Err(err) => return Poll::Ready(Err(err).context(AcceptingSnafu)),
+                }
+            }
+
+            return Poll::Ready(Ok(this
+                .channel
+                .take()
+                .expect("Channel is already returned")));
+        }
+
+        let channel = ready!(this.fut.poll(cx))?;
+
+        this.channel.replace(channel);
+
+        cx.waker().wake_by_ref();
+
+        Poll::Pending
+    }
+}
+
+async fn build_channel<A, T, E, const N: usize>(
     local_addr: A,
     limit: Option<usize>,
-    accept: usize,
     tcp_settings: TcpSettings,
-    filter: Filter,
-) -> Result<Channel<T, E, N, TcpListener>> {
+) -> Result<Channel<T, E, N, TcpListener>>
+where
+    A: 'static + Send + ToSocketAddrs,
+{
     let addr = tokio::task::spawn_blocking(move || {
         local_addr.to_socket_addrs()?.next().ok_or(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
@@ -347,36 +657,13 @@ async fn build_tcp_channel<
 
     let local_addr = listener.local_addr().context(LocalAddrSnafu { addr })?;
 
-    let mut pool: StreamPool<_, N> = if N > 0 {
+    let pool: StreamPool<_, N> = if N > 0 {
         StreamPool::<_, N>::array()
     } else if let Some(limit) = limit {
         StreamPool::with_limit(limit)
     } else {
-        StreamPool::with_capacity(accept)
+        StreamPool::vec()
     };
-
-    let accept = limit.map(|l| l.min(accept)).unwrap_or(accept);
-
-    let mut i = 0;
-    while i < accept {
-        let (stream, addr) = listener.accept().await.context(AcceptingSnafu { addr })?;
-        if filter(addr) {
-            if let Some(nodelay) = tcp_settings.stream_settings.nodelay {
-                stream
-                    .set_nodelay(nodelay)
-                    .context(SetNodelaySnafu { addr })?;
-            }
-
-            if let Some(ttl) = tcp_settings.stream_settings.ttl {
-                stream.set_ttl(ttl).context(SetTtlSnafu { addr })?;
-            }
-
-            pool.push_stream(stream, addr)
-                .expect("Element should be pushed til len");
-
-            i += 1;
-        }
-    }
 
     Ok(Channel {
         listener,
@@ -480,21 +767,34 @@ pub mod errors {
             source: io::Error,
             backtrace: Backtrace,
         },
-        /// returned from invalid inner IO Error
-        #[snafu(display(
-            "[BuilderError] Encountered IO Error while accepting connections on {addr}"
-        ))]
-        Accepting {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
         #[snafu(display("[BuilderError] Failed to get local addr for listener on {addr}"))]
         LocalAddr {
             addr: SocketAddr,
             source: io::Error,
             backtrace: Backtrace,
         },
+    }
+
+    #[derive(Debug, Snafu)]
+    #[snafu(visibility(pub(super)))]
+    pub enum AcceptingError<LE>
+    where
+        LE: 'static + snafu::Error,
+    {
+        #[snafu(display(
+            "[Builder Accepting Error] Failed to accept connection while building Channel"
+        ))]
+        Accepting { source: LE, backtrace: Backtrace },
+        #[snafu(display("[Builder Error] Failed to build Channel"))]
+        Building { source: BuilderError },
+    }
+
+    impl<LE> From<BuilderError> for AcceptingError<LE>
+    where
+        LE: 'static + snafu::Error,
+    {
+        fn from(e: BuilderError) -> Self {
+            Self::Building { source: e }
+        }
     }
 }

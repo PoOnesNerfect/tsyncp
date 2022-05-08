@@ -11,7 +11,7 @@ const LEN: usize = 10;
 
 const ADDR: &str = "localhost:8000";
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct Dummy {
     field1: String,
     field2: u64,
@@ -68,8 +68,11 @@ async fn try_main() -> Result<()> {
         .collect::<Vec<_>>();
 
     let rx_handle = tokio::spawn(async move {
-        let mut rx: mpsc::JsonReceiver<Dummy> =
-            mpsc::receiver_on(ADDR).limit(LEN).accept_full().await?;
+        let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::receiver_on(ADDR)
+            .limit(LEN)
+            .accept()
+            .to_limit()
+            .await?;
 
         let mut map = std::collections::HashMap::new();
 

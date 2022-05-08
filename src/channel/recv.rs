@@ -1,5 +1,11 @@
+//! Contains futures for receiving items on channel.
+//!
+//! These futures are built by calling `channel.recv()` and chaining methods to it.
+//!
+//! For detailed examples, see each documentation in the structs below.
+
 use super::{
-    errors::{FrameDecodeSnafu, PollNextSnafu, StreamError},
+    errors::{ItemDecodeSnafu, PollNextSnafu, StreamError},
     Channel,
 };
 use crate::util::codec::DecodeMethod;
@@ -10,6 +16,34 @@ use snafu::ResultExt;
 use std::task::Poll;
 use tokio::io::AsyncRead;
 
+/// Basic future that returns a received item.
+///
+/// ```no_run
+/// use color_eyre::Result;
+/// use serde::{Serialize, Deserialize};
+/// use tsyncp::channel;
+/// use std::time::Duration;
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy {
+///     field1: String,
+///     field2: u64,
+///     field3: Vec<u8>,
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_to("localhost:11114")
+///         .retry(Duration::from_millis(500), 100)     // Retry connecting to remote address 100 times every 500 ms.
+///         .await?;
+///
+///     if let Some(Ok(item)) = ch.recv().await {
+///         println!("{item:?} received");
+///     }
+///
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 #[pin_project]
 pub struct RecvFuture<'pin, T, E, S> {
@@ -33,6 +67,34 @@ impl<'pin, T, E, S> RecvFuture<'pin, T, E, S> {
         Self { channel }
     }
 
+    /// Returns a new future [AsBytesFuture].
+    ///
+    /// ```no_run
+    /// use color_eyre::Result;
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::channel;
+    /// use std::time::Duration;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_on("localhost:11114")
+    ///         .retry(Duration::from_millis(500), 100)     // Retry connecting to remote address 100 times every 500 ms.
+    ///         .await?;
+    ///
+    ///     if let Some(Ok(bytes)) = ch.recv().as_bytes().await {
+    ///         println!("{} received", std::str::from_utf8(&bytes).unwrap());
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn as_bytes(self) -> AsBytesFuture<'pin, T, E, S> {
         AsBytesFuture::new(self.channel)
     }
@@ -51,16 +113,52 @@ where
     ) -> std::task::Poll<Self::Output> {
         let frame = match ready!(self.channel.framed.poll_next_unpin(cx)) {
             Some(Ok(frame)) => frame,
-            Some(Err(error)) => return Poll::Ready(Some(Err(error).context(PollNextSnafu))),
+            Some(Err(error)) => {
+                return Poll::Ready(Some(Err(error).with_context(|_| PollNextSnafu {
+                    addr: *self.channel.local_addr(),
+                    peer_addr: *self.channel.peer_addr(),
+                })))
+            }
             None => return Poll::Ready(None),
         };
 
-        let decoded = E::decode(frame).context(FrameDecodeSnafu);
+        let decoded = E::decode(frame).with_context(|_| ItemDecodeSnafu {
+            addr: *self.channel.local_addr(),
+            peer_addr: *self.channel.peer_addr(),
+        });
 
         Poll::Ready(Some(decoded))
     }
 }
 
+/// Future that returns bytes of an item before decoding.
+///
+/// ```no_run
+/// use color_eyre::Result;
+/// use serde::{Serialize, Deserialize};
+/// use tsyncp::channel;
+/// use std::time::Duration;
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy {
+///     field1: String,
+///     field2: u64,
+///     field3: Vec<u8>,
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_on("localhost:11114")
+///         .retry(Duration::from_millis(500), 100)     // Retry connecting to remote address 100 times every 500 ms.
+///         .await?;
+///
+///     if let Some(Ok(bytes)) = ch.recv().as_bytes().await {
+///         println!("{} received", std::str::from_utf8(&bytes).unwrap());
+///     }
+///
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 #[pin_project]
 pub struct AsBytesFuture<'pin, T, E, S> {
@@ -98,7 +196,12 @@ where
     ) -> std::task::Poll<Self::Output> {
         let frame = match ready!(self.channel.framed.poll_next_unpin(cx)) {
             Some(Ok(frame)) => frame,
-            Some(Err(error)) => return Poll::Ready(Some(Err(error).context(PollNextSnafu))),
+            Some(Err(error)) => {
+                return Poll::Ready(Some(Err(error).with_context(|_| PollNextSnafu {
+                    addr: *self.channel.local_addr(),
+                    peer_addr: *self.channel.peer_addr(),
+                })))
+            }
             None => return Poll::Ready(None),
         };
 

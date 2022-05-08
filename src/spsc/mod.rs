@@ -15,10 +15,10 @@ pub type JsonSender<T> = Sender<T, crate::util::codec::JsonCodec>;
 pub type JsonReceiver<T> = Receiver<T, crate::util::codec::JsonCodec>;
 
 #[cfg(feature = "protobuf")]
-pub type ProtobufSender<T> = Sender<T, crate::util::codec::ProtobufCodec>;
+pub type ProstSender<T> = Sender<T, crate::util::codec::ProstCodec>;
 
 #[cfg(feature = "protobuf")]
-pub type ProtobufReceiver<T> = Receiver<T, crate::util::codec::ProtobufCodec>;
+pub type ProstReceiver<T> = Receiver<T, crate::util::codec::ProstCodec>;
 
 #[cfg(feature = "bincode")]
 pub type BincodeSender<T> = Sender<T, crate::util::codec::BincodeCodec>;
@@ -26,11 +26,11 @@ pub type BincodeSender<T> = Sender<T, crate::util::codec::BincodeCodec>;
 #[cfg(feature = "bincode")]
 pub type BincodeReceiver<T> = Receiver<T, crate::util::codec::BincodeCodec>;
 
-#[cfg(feature = "rkyv")]
-pub type RkyvSender<T> = Sender<T, crate::util::codec::RkyvCodec>;
+// #[cfg(feature = "rkyv")]
+// pub type RkyvSender<T> = Sender<T, crate::util::codec::RkyvCodec>;
 
-#[cfg(feature = "rkyv")]
-pub type RkyvReceiver<T, const N: usize = 0> = Receiver<T, crate::util::codec::RkyvCodec>;
+// #[cfg(feature = "rkyv")]
+// pub type RkyvReceiver<T, const N: usize = 0> = Receiver<T, crate::util::codec::RkyvCodec>;
 
 pub fn sender_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     dest: A,

@@ -1,7 +1,7 @@
 //! Contains [EncodeMethod] and [DecodeMethod] to generically implement encoding and decoding over
 //! different libraries.
 //!
-//! Module also contains already implemented codec to be easily used.
+//! Module also contains already implemented codecs to be easily used.
 
 use bytes::{Bytes, BytesMut};
 use std::io;
@@ -10,6 +10,29 @@ use std::io;
 use serde::{de::DeserializeOwned, Serialize};
 
 /// Trait for encoding a given item into bytes.
+///
+/// Generic parameter `T` is the data that will be encoded.
+/// When implementing this trait, you can specify trait requirements for `T`, so that,
+/// any types that implements that trait will be able to be encoded.
+///
+/// # Example
+///
+/// Below example will serialize any item that implements `serde::Serialize` into json.
+///
+/// ```no_run
+/// use tsyncp::util::codec::EncodeMethod;
+/// use bytes::Bytes;
+///
+/// pub struct MyCustomCodec;
+///
+/// impl<T: serde::Serialize> EncodeMethod<T> for MyCustomCodec {
+///     type Error = serde_json::Error;
+///
+///     fn encode(data: &T) -> Result<Bytes, Self::Error> {
+///         serde_json::to_vec(data).map(Into::into)
+///     }
+/// }
+/// ```
 pub trait EncodeMethod<T> {
     type Error: 'static + snafu::Error;
 
@@ -17,6 +40,29 @@ pub trait EncodeMethod<T> {
 }
 
 /// Trait for decoding given bytes into an item.
+///
+/// Generic parameter `T` is the data that will be decoded.
+/// When implementing this trait, you can specify trait requirements for `T`, so that,
+/// any types that implements that trait will be able to be decoded.
+///
+/// # Example
+///
+/// Below example will deserialize any item that implements `serde::de::DeserializeOwned` from json bytes.
+///
+/// ```no_run
+/// use tsyncp::util::codec::DecodeMethod;
+/// use bytes::BytesMut;
+///
+/// pub struct MyCustomCodec;
+///
+/// impl<T: serde::de::DeserializeOwned> DecodeMethod<T> for MyCustomCodec {
+///     type Error = serde_json::Error;
+///
+///     fn decode(bytes: BytesMut) -> Result<T, Self::Error> {
+///         serde_json::from_slice(bytes.as_ref())
+///     }
+/// }
+/// ```
 pub trait DecodeMethod<T> {
     type Error: 'static + snafu::Error;
 
@@ -88,7 +134,7 @@ mod json {
     /// use serde::{Serialize, Deserialize};
     /// use tsyncp::mpsc;
     ///
-    /// #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// #[derive(Debug, Serialize, Deserialize)]
     /// struct Dummy {
     ///     field1: String,
     ///     field2: u64,
@@ -151,7 +197,7 @@ mod bincode_mod {
     /// use serde::{Serialize, Deserialize};
     /// use tsyncp::mpsc;
     ///
-    /// #[derive(Debug, Clone, Serialize, Deserialize)]
+    /// #[derive(Debug, Serialize, Deserialize)]
     /// struct Dummy {
     ///     field1: String,
     ///     field2: u64,
@@ -204,9 +250,9 @@ mod protobuf {
     /// ```no_run
     /// use tsyncp::mpsc;
     ///
-    /// pub type ProtobufSender<T> = mpsc::Sender<T, tsyncp::util::codec::ProtobufCodec>;
+    /// pub type ProstSender<T> = mpsc::Sender<T, tsyncp::util::codec::ProstCodec>;
     ///
-    /// pub type ProtobufReceiver<T, const N: usize = 0> = mpsc::Receiver<T, tsyncp::util::codec::ProtobufCodec, N>;
+    /// pub type ProstReceiver<T, const N: usize = 0> = mpsc::Receiver<T, tsyncp::util::codec::ProstCodec, N>;
     /// ```
     ///
     /// ### Example
@@ -214,7 +260,7 @@ mod protobuf {
     /// use prost::Message;
     /// use tsyncp::mpsc;
     ///
-    /// #[derive(Clone, Message)]
+    /// #[derive(Message)]
     /// struct Dummy {
     ///     #[prost(string, tag = "1")]
     ///     field1: String,
@@ -224,15 +270,15 @@ mod protobuf {
     ///
     /// #[tokio::main]
     /// async fn main() -> color_eyre::Result<()> {
-    ///     let rx: mpsc::ProtobufReceiver<Dummy> = mpsc::receiver_on("localhost:8000").await?;
-    ///     let tx: mpsc::ProtobufSender<Dummy> = mpsc::sender_to("localhost:8000").await?;
+    ///     let rx: mpsc::ProstReceiver<Dummy> = mpsc::receiver_on("localhost:8000").await?;
+    ///     let tx: mpsc::ProstSender<Dummy> = mpsc::sender_to("localhost:8000").await?;
     ///     Ok(())
     /// }
     /// ```
     #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-    pub struct ProtobufCodec;
+    pub struct ProstCodec;
 
-    impl<T: prost::Message> EncodeMethod<T> for ProtobufCodec {
+    impl<T: prost::Message> EncodeMethod<T> for ProstCodec {
         type Error = prost::EncodeError;
 
         fn encode(data: &T) -> Result<Bytes, Self::Error> {
@@ -240,7 +286,7 @@ mod protobuf {
         }
     }
 
-    impl<T: prost::Message + Default> DecodeMethod<T> for ProtobufCodec {
+    impl<T: prost::Message + Default> DecodeMethod<T> for ProstCodec {
         type Error = prost::DecodeError;
 
         fn decode(mut bytes: BytesMut) -> Result<T, Self::Error> {

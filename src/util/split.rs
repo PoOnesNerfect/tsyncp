@@ -2,6 +2,12 @@ use super::{frame_codec::VariedLengthDelimitedCodec, tcp, Framed};
 use tokio::net::TcpStream;
 use tokio_util::codec::FramedParts;
 
+/// Provides abstraction over splitting an object into two different types.
+///
+/// This trait is useful for splitting a stream (i.e. TcpStream) into ReadHalf and WriteHalf,
+/// and split a listener (i.e. TcpListener) into `ReadListener` and `WriteListener`.
+///
+/// These split structs are used when splitting a channel into `Receiver` and `Sender` pair.
 pub trait Split: Sized {
     type Left;
     type Right;

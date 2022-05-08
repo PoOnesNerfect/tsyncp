@@ -11,7 +11,7 @@ const LEN: usize = 10;
 
 const ADDR: &str = "localhost:8000";
 
-#[derive(Clone, Message)]
+#[derive(Message)]
 struct Dummy {
     #[prost(string, tag = "1")]
     field1: String,
@@ -33,8 +33,11 @@ async fn main() {
 
 async fn try_main() -> Result<()> {
     let broadcast_handle = tokio::spawn(async move {
-        let mut tx: broadcast::ProtobufSender<Dummy> =
-            broadcast::sender_on(ADDR).limit(LEN).accept_full().await?;
+        let mut tx: broadcast::ProstSender<Dummy> = broadcast::sender_on(ADDR)
+            .limit(LEN)
+            .accept()
+            .to_limit()
+            .await?;
 
         let now = Instant::now();
         for i in 0..COUNT {
@@ -56,7 +59,7 @@ async fn try_main() -> Result<()> {
     let handles = (0..LEN)
         .map(|n| {
             tokio::spawn(async move {
-                let mut rx: broadcast::ProtobufReceiver<Dummy> = broadcast::receiver_to(ADDR)
+                let mut rx: broadcast::ProstReceiver<Dummy> = broadcast::receiver_to(ADDR)
                     .retry(Duration::from_millis(500), 100)
                     .await?;
 

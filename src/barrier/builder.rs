@@ -1,6 +1,6 @@
 use super::{Barrier, Waiter};
 use crate::util::codec::EmptyCodec;
-use crate::util::{accept::Accept, listener::WriteListener, split::Split};
+use crate::util::{listener::WriteListener, Accept, Split};
 use crate::{channel, multi_channel};
 use futures::{ready, Future};
 use pin_project::pin_project;
@@ -26,7 +26,6 @@ pub(crate) fn new_barrier<A: 'static + Send + Clone + ToSocketAddrs>(
     local_addr: A,
 ) -> BarrierBuilderFuture<
     A,
-    impl Clone + Fn(SocketAddr) -> bool,
     impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec>>>,
 > {
     BarrierBuilderFuture {
@@ -38,7 +37,7 @@ pub(crate) fn new_barrier<A: 'static + Send + Clone + ToSocketAddrs>(
 #[pin_project]
 pub struct WaiterBuilderFuture<A, Filter, Fut, S = TcpStream> {
     #[pin]
-    fut: channel::builder::ChannelBuilderFuture<A, (), EmptyCodec, Filter, Fut, S>,
+    fut: channel::builder::BuilderFuture<A, (), EmptyCodec, Filter, Fut, S>,
 }
 
 impl<A, Filter, Fut> WaiterBuilderFuture<A, Filter, Fut>
@@ -178,22 +177,62 @@ where
 
 #[derive(Debug)]
 #[pin_project]
-pub struct BarrierBuilderFuture<A, Filter, Fut, const N: usize = 0, L = TcpListener>
+pub struct BarrierBuilderFuture<A, Fut, const N: usize = 0, L = TcpListener>
 where
-    Filter: Fn(SocketAddr) -> bool,
     Fut: Future<
         Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N, L>>,
     >,
     L: Accept,
 {
     #[pin]
-    fut: multi_channel::builder::ChannelBuilderFuture<A, (), EmptyCodec, Filter, Fut, N, L>,
+    fut: multi_channel::builder::BuilderFuture<A, (), EmptyCodec, Fut, N, L>,
 }
 
-impl<A, Filter, Fut, const N: usize> BarrierBuilderFuture<A, Filter, Fut, N>
+impl<A, Fut, const N: usize, L> BarrierBuilderFuture<A, Fut, N, L>
 where
     A: 'static + Send + Clone + ToSocketAddrs,
-    Filter: Clone + Fn(SocketAddr) -> bool,
+    L: Accept,
+    L::Output: Split,
+    <L::Output as Split>::Left: fmt::Debug,
+    <L::Output as Split>::Right: fmt::Debug,
+    Fut: Future<
+        Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N, L>>,
+    >,
+{
+    /// Before returning a [Barrier], first accept the given number of connections.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut barrier: barrier::Barrier = barrier::barrier_on("localhost:8000")
+    ///         .accept()               // accept connections before returning. (default: 1)
+    ///         .num(10)                // accept 10 connections.
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn accept(
+        self,
+    ) -> multi_channel::builder::AcceptBuilderFuture<
+        Self,
+        Barrier<N, WriteListener<L>>,
+        (),
+        EmptyCodec,
+        N,
+        WriteListener<L>,
+        impl FnMut(SocketAddr),
+        impl FnMut(SocketAddr) -> bool,
+    > {
+        multi_channel::builder::AcceptBuilderFuture::new(self, |_| {}, |_| true)
+    }
+}
+
+impl<A, Fut, const N: usize> BarrierBuilderFuture<A, Fut, N>
+where
+    A: 'static + Send + Clone + ToSocketAddrs,
     Fut: Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N>>>,
 {
     pub fn limit(
@@ -201,7 +240,6 @@ where
         limit: usize,
     ) -> BarrierBuilderFuture<
         A,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N>>>,
         N,
     > {
@@ -210,67 +248,10 @@ where
         }
     }
 
-    pub fn accept(
-        self,
-        accept: usize,
-    ) -> BarrierBuilderFuture<
-        A,
-        Filter,
-        impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N>>>,
-        N,
-    > {
-        BarrierBuilderFuture {
-            fut: self.fut.accept(accept),
-        }
-    }
-
-    pub fn accept_full(
-        self,
-    ) -> BarrierBuilderFuture<
-        A,
-        Filter,
-        impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N>>>,
-        N,
-    > {
-        BarrierBuilderFuture {
-            fut: self.fut.accept_full(),
-        }
-    }
-
-    pub fn accept_filtered<const M: usize, Filter2: Clone + Fn(SocketAddr) -> bool>(
-        self,
-        accept: usize,
-        filter: Filter2,
-    ) -> BarrierBuilderFuture<
-        A,
-        Filter2,
-        impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, M>>>,
-        M,
-    > {
-        BarrierBuilderFuture {
-            fut: self.fut.accept_filtered(accept, filter),
-        }
-    }
-
-    pub fn accept_filtered_full<const M: usize, Filter2: Clone + Fn(SocketAddr) -> bool>(
-        self,
-        filter: Filter2,
-    ) -> BarrierBuilderFuture<
-        A,
-        Filter2,
-        impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, M>>>,
-        M,
-    > {
-        BarrierBuilderFuture {
-            fut: self.fut.accept_filtered_full(filter),
-        }
-    }
-
     pub fn limit_const<const M: usize>(
         self,
     ) -> BarrierBuilderFuture<
         A,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, M>>>,
         M,
     > {
@@ -284,7 +265,6 @@ where
         reuseaddr: bool,
     ) -> BarrierBuilderFuture<
         A,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N>>>,
         N,
     > {
@@ -303,7 +283,6 @@ where
         reuseport: bool,
     ) -> BarrierBuilderFuture<
         A,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N>>>,
         N,
     > {
@@ -317,7 +296,6 @@ where
         dur: Option<Duration>,
     ) -> BarrierBuilderFuture<
         A,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N>>>,
         N,
     > {
@@ -331,7 +309,6 @@ where
         nodelay: bool,
     ) -> BarrierBuilderFuture<
         A,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N>>>,
         N,
     > {
@@ -345,7 +322,6 @@ where
         ttl: u32,
     ) -> BarrierBuilderFuture<
         A,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N>>>,
         N,
     > {
@@ -359,7 +335,6 @@ where
         size: u32,
     ) -> BarrierBuilderFuture<
         A,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N>>>,
         N,
     > {
@@ -373,7 +348,6 @@ where
         size: u32,
     ) -> BarrierBuilderFuture<
         A,
-        Filter,
         impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N>>>,
         N,
     > {
@@ -383,12 +357,11 @@ where
     }
 }
 
-impl<A, Filter, Fut, const N: usize, L> Future for BarrierBuilderFuture<A, Filter, Fut, N, L>
+impl<A, Fut, const N: usize, L> Future for BarrierBuilderFuture<A, Fut, N, L>
 where
     Fut: Future<
         Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec, N, L>>,
     >,
-    Filter: Fn(SocketAddr) -> bool,
     L: Accept,
     L::Output: Split,
     <L::Output as Split>::Left: fmt::Debug,

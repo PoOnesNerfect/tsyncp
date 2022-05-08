@@ -1,7 +1,7 @@
 use crate::{
     channel,
     multi_channel::{self, send::SendFuture},
-    util::{accept::Accept, codec::EmptyCodec, listener::WriteListener, tcp},
+    util::{codec::EmptyCodec, listener::WriteListener, tcp, Accept},
 };
 use futures::Future;
 use snafu::Backtrace;
@@ -13,17 +13,16 @@ use tokio::{
 
 pub mod builder;
 
-pub fn block_on<A: 'static + Clone + Send + ToSocketAddrs>(
+pub fn barrier_on<A: 'static + Clone + Send + ToSocketAddrs>(
     local_addr: A,
 ) -> builder::BarrierBuilderFuture<
     A,
-    impl Clone + Fn(SocketAddr) -> bool,
     impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<(), EmptyCodec>>>,
 > {
     builder::new_barrier(local_addr)
 }
 
-pub fn wait_to<A: 'static + Clone + Send + ToSocketAddrs>(
+pub fn waiter_to<A: 'static + Clone + Send + ToSocketAddrs>(
     dest: A,
 ) -> builder::WaiterBuilderFuture<
     A,
@@ -61,6 +60,15 @@ where
 pub struct Barrier<const N: usize = 0, L: Accept = WriteListener<TcpListener>>(
     #[pin] multi_channel::Channel<(), EmptyCodec, N, L>,
 );
+
+impl<const N: usize, L> AsMut<multi_channel::Channel<(), EmptyCodec, N, L>> for Barrier<N, L>
+where
+    L: Accept,
+{
+    fn as_mut(&mut self) -> &mut multi_channel::Channel<(), EmptyCodec, N, L> {
+        &mut self.0
+    }
+}
 
 impl<const N: usize, L> Barrier<N, L>
 where

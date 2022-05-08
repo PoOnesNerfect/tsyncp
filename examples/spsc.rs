@@ -8,7 +8,7 @@ use tsyncp::spsc;
 const ADDR1: &str = "localhost:8000";
 const ADDR2: &str = "localhost:8001";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Dummy {
     field1: String,
     field2: u64,

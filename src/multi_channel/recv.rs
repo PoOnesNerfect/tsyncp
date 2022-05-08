@@ -1,9 +1,15 @@
+//! Contains futures for receiving items on channel.
+//!
+//! These futures are built by calling `channel.recv()` and chaining methods to it.
+//!
+//! For detailed examples, see each documentation in the structs below.
+
 use super::{
-    accept::WhileAcceptingFuture,
+    accept::ChainedAcceptFuture,
     errors::{ItemDecodeSnafu, StreamError, StreamSnafu},
     Channel,
 };
-use crate::util::{accept::Accept, codec::DecodeMethod};
+use crate::util::{codec::DecodeMethod, Accept};
 use bytes::BytesMut;
 use futures::{ready, Future, StreamExt};
 use pin_project::pin_project;
@@ -11,6 +17,33 @@ use snafu::ResultExt;
 use std::{net::SocketAddr, task::Poll};
 use tokio::io::AsyncRead;
 
+/// Basic future that returns a received item.
+///
+/// ```no_run
+/// use color_eyre::Result;
+/// use serde::{Serialize, Deserialize};
+/// use tsyncp::multi_channel;
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy {
+///     field1: String,
+///     field2: u64,
+///     field3: Vec<u8>,
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .accept(10)
+///         .await?;
+///
+///     if let Some(Ok(item)) = ch.recv().await {
+///         println!("{item:?} received");
+///     }
+///
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 #[pin_project]
 pub struct RecvFuture<'pin, T, E, const N: usize, L>
@@ -46,20 +79,121 @@ where
         Self { channel }
     }
 
+    /// Returns a new future [AsBytesFuture].
+    ///
+    /// ```no_run
+    /// use color_eyre::Result;
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::multi_channel;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+    ///         .accept(10)
+    ///         .await?;
+    ///
+    ///     if let Some(Ok(bytes)) = ch.recv().as_bytes().await {
+    ///         println!("{} received", std::str::from_utf8(&bytes).unwrap());
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn as_bytes(self) -> AsBytesFuture<'pin, T, E, N, L> {
         AsBytesFuture::new(self.channel)
     }
 
+    /// Returns a new future [WithAddrFuture].
+    ///
+    /// ```no_run
+    /// use color_eyre::Result;
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::multi_channel;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+    ///         .accept(10)
+    ///         .await?;
+    ///
+    ///     if let Some(Ok((item, addr))) = ch.recv().with_addr().await {
+    ///         println!("{item:?} received from {addr}");
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn with_addr(self) -> WithAddrFuture<'pin, T, E, N, L> {
         WithAddrFuture::new(self.channel)
     }
 
-    pub fn accepting(self) -> WhileAcceptingFuture<'pin, T, E, N, L, Self>
+    /// Returns [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture) that
+    /// wraps this future.
+    ///
+    /// [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture) will poll accept
+    /// whenever this future is polled. When this future completes, [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture)
+    /// will also complete, whether or not it accepted any connections.
+    ///
+    /// ```no_run
+    /// use color_eyre::Result;
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::multi_channel;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+    ///         .accept(10)
+    ///         .await?;
+    ///
+    ///     if let (Some(Ok(item)), Ok(accepted_addrs)) = ch.recv().accepting().await {
+    ///         for addr in accepted_addrs {
+    ///             println!("{addr} accepted while receiving item")
+    ///         }
+    ///
+    ///         println!("{item:?} received");
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn accepting(
+        self,
+    ) -> ChainedAcceptFuture<
+        'pin,
+        T,
+        E,
+        N,
+        L,
+        Self,
+        impl FnMut(SocketAddr),
+        impl FnMut(SocketAddr) -> bool,
+    >
     where
         E: DecodeMethod<T>,
         L::Output: AsyncRead + Unpin,
     {
-        WhileAcceptingFuture::new(self)
+        ChainedAcceptFuture::new(self, |_| {}, |_| true)
     }
 }
 
@@ -79,6 +213,33 @@ where
     }
 }
 
+/// Future that returns a tuple of received item and the address it came from.
+///
+/// ```no_run
+/// use color_eyre::Result;
+/// use serde::{Serialize, Deserialize};
+/// use tsyncp::multi_channel;
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy {
+///     field1: String,
+///     field2: u64,
+///     field3: Vec<u8>,
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .accept(10)
+///         .await?;
+///
+///     if let Some(Ok((item, addr))) = ch.recv().with_addr().await {
+///         println!("{item:?} received from {addr}");
+///     }
+///
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 #[pin_project]
 pub struct WithAddrFuture<'pin, T, E, const N: usize, L>
@@ -114,16 +275,90 @@ where
         Self { channel }
     }
 
+    /// Returns a new future [AsBytesWithAddrFuture].
+    ///
+    /// ```no_run
+    /// use color_eyre::Result;
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::multi_channel;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+    ///         .accept(10)
+    ///         .await?;
+    ///
+    ///     if let Some(Ok((bytes, addr))) = ch.recv().with_addr().as_bytes().await {
+    ///         println!("{} received from {addr}", std::str::from_utf8(&bytes).unwrap());
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn as_bytes(self) -> AsBytesWithAddrFuture<'pin, T, E, N, L> {
         AsBytesWithAddrFuture::new(self.channel)
     }
 
-    pub fn accepting(self) -> WhileAcceptingFuture<'pin, T, E, N, L, Self>
+    /// Returns [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture) that
+    /// wraps this future.
+    ///
+    /// [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture) will poll accept
+    /// whenever this future is polled. When this future completes, [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture)
+    /// will also complete, whether or not it accepted any connections.
+    ///
+    /// ```no_run
+    /// use color_eyre::Result;
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::multi_channel;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+    ///         .accept(10)
+    ///         .await?;
+    ///
+    ///     if let (Some(Ok((item, addr))), Ok(accepted_addrs)) = ch.recv().with_addr().accepting().await {
+    ///         for addr in accepted_addrs {
+    ///             println!("{addr} accepted while receiving item")
+    ///         }
+    ///
+    ///         println!("{item:?} received from {addr}");
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn accepting(
+        self,
+    ) -> ChainedAcceptFuture<
+        'pin,
+        T,
+        E,
+        N,
+        L,
+        Self,
+        impl FnMut(SocketAddr),
+        impl FnMut(SocketAddr) -> bool,
+    >
     where
         E: DecodeMethod<T>,
         L::Output: AsyncRead + Unpin,
     {
-        WhileAcceptingFuture::new(self)
+        ChainedAcceptFuture::new(self, |_| {}, |_| true)
     }
 }
 
@@ -153,6 +388,33 @@ where
     }
 }
 
+/// Future that returns bytes of an item before decoding.
+///
+/// ```no_run
+/// use color_eyre::Result;
+/// use serde::{Serialize, Deserialize};
+/// use tsyncp::multi_channel;
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy {
+///     field1: String,
+///     field2: u64,
+///     field3: Vec<u8>,
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .accept(10)
+///         .await?;
+///
+///     if let Some(Ok(bytes)) = ch.recv().as_bytes().await {
+///         println!("{} received", std::str::from_utf8(&bytes).unwrap());
+///     }
+///
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 #[pin_project]
 pub struct AsBytesFuture<'pin, T, E, const N: usize, L>
@@ -188,16 +450,90 @@ where
         Self { channel }
     }
 
+    /// Returns a new future [AsBytesWithAddrFuture].
+    ///
+    /// ```no_run
+    /// use color_eyre::Result;
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::multi_channel;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+    ///         .accept(10)
+    ///         .await?;
+    ///
+    ///     if let Some(Ok((bytes, addr))) = ch.recv().as_bytes().with_addr().await {
+    ///         println!("{} received from {addr}", std::str::from_utf8(&bytes).unwrap());
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn with_addr(self) -> AsBytesWithAddrFuture<'pin, T, E, N, L> {
         AsBytesWithAddrFuture::new(self.channel)
     }
 
-    pub fn accepting(self) -> WhileAcceptingFuture<'pin, T, E, N, L, Self>
+    /// Returns [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture) that
+    /// wraps this future.
+    ///
+    /// [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture) will poll accept
+    /// whenever this future is polled. When this future completes, [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture)
+    /// will also complete, whether or not it accepted any connections.
+    ///
+    /// ```no_run
+    /// use color_eyre::Result;
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::multi_channel;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+    ///         .accept(10)
+    ///         .await?;
+    ///
+    ///     if let (Some(Ok(bytes)), Ok(accepted_addrs)) = ch.recv().as_bytes().accepting().await {
+    ///         for addr in accepted_addrs {
+    ///             println!("{addr} accepted while receiving item")
+    ///         }
+    ///
+    ///         println!("{} received", std::str::from_utf8(&bytes).unwrap());
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub fn accepting(
+        self,
+    ) -> ChainedAcceptFuture<
+        'pin,
+        T,
+        E,
+        N,
+        L,
+        Self,
+        impl FnMut(SocketAddr),
+        impl FnMut(SocketAddr) -> bool,
+    >
     where
         E: DecodeMethod<T>,
         L::Output: AsyncRead + Unpin,
     {
-        WhileAcceptingFuture::new(self)
+        ChainedAcceptFuture::new(self, |_| {}, |_| true)
     }
 }
 
@@ -225,6 +561,33 @@ where
     }
 }
 
+/// Future that returns a tuple of bytes and address where it came from.
+///
+/// ```no_run
+/// use color_eyre::Result;
+/// use serde::{Serialize, Deserialize};
+/// use tsyncp::multi_channel;
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy {
+///     field1: String,
+///     field2: u64,
+///     field3: Vec<u8>,
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .accept(10)
+///         .await?;
+///
+///     if let Some(Ok((bytes, addr))) = ch.recv().as_bytes().with_addr().await {
+///         println!("{} received from {addr}", std::str::from_utf8(&bytes).unwrap());
+///     }
+///
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 #[pin_project]
 pub struct AsBytesWithAddrFuture<'pin, T, E, const N: usize, L>
@@ -262,12 +625,23 @@ where
         Self { channel }
     }
 
-    pub fn accepting(self) -> WhileAcceptingFuture<'pin, T, E, N, L, Self>
+    pub fn accepting(
+        self,
+    ) -> ChainedAcceptFuture<
+        'pin,
+        T,
+        E,
+        N,
+        L,
+        Self,
+        impl FnMut(SocketAddr),
+        impl FnMut(SocketAddr) -> bool,
+    >
     where
         E: DecodeMethod<T>,
         L::Output: AsyncRead + Unpin,
     {
-        WhileAcceptingFuture::new(self)
+        ChainedAcceptFuture::new(self, |_| {}, |_| true)
     }
 }
 

@@ -1,6 +1,6 @@
 use super::{Receiver, Sender};
 use crate::channel;
-use crate::util::split::Split;
+use crate::util::Split;
 use futures::{ready, Future};
 use pin_project::pin_project;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -68,7 +68,7 @@ pub(crate) fn receiver_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
 #[pin_project]
 pub struct SenderToBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
-    fut: channel::builder::ChannelBuilderFuture<A, T, E, Filter, Fut, S>,
+    fut: channel::builder::BuilderFuture<A, T, E, Filter, Fut, S>,
 }
 
 impl<A, T, E, Filter, Fut> SenderToBuilderFuture<A, T, E, Filter, Fut>
@@ -226,7 +226,7 @@ where
 #[pin_project]
 pub struct SenderOnBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
-    fut: channel::builder::ChannelBuilderFuture<A, T, E, Filter, Fut, S>,
+    fut: channel::builder::BuilderFuture<A, T, E, Filter, Fut, S>,
 }
 
 impl<A, T, E, Filter, Fut> SenderOnBuilderFuture<A, T, E, Filter, Fut>
@@ -383,7 +383,7 @@ where
 #[pin_project]
 pub struct ReceiverToBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
-    fut: channel::builder::ChannelBuilderFuture<A, T, E, Filter, Fut, S>,
+    fut: channel::builder::BuilderFuture<A, T, E, Filter, Fut, S>,
 }
 
 impl<A, T, E, Filter, Fut> ReceiverToBuilderFuture<A, T, E, Filter, Fut>
@@ -541,7 +541,7 @@ where
 #[pin_project]
 pub struct ReceiverOnBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
     #[pin]
-    fut: channel::builder::ChannelBuilderFuture<A, T, E, Filter, Fut, S>,
+    fut: channel::builder::BuilderFuture<A, T, E, Filter, Fut, S>,
 }
 
 impl<A, T, E, Filter, Fut> ReceiverOnBuilderFuture<A, T, E, Filter, Fut>

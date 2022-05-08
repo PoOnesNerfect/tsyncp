@@ -1,3 +1,5 @@
+//! Light wrappers around [tokio::net::tcp]'s [OwnedReadHalf](tokio::net::tcp::OwnedReadHalf) and [OwnedWriteHalf](tokio::net::tcp::OwnedWriteHalf).
+
 use std::io;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
@@ -20,6 +22,7 @@ pub(crate) fn reunite(
     read.inner.reunite(w_inner)
 }
 
+/// Light wrapper around [tokio::net::tcp::OwnedReadHalf].
 #[derive(Debug)]
 pub struct OwnedReadHalf {
     inner: tcp::OwnedReadHalf,
@@ -55,9 +58,8 @@ impl DerefMut for OwnedReadHalf {
     }
 }
 
-/// Light wrapper around tokio's OwnedWriteHalf to stop it from shutting down TCP stream with the
-/// it drops. Option around the inner struct is to take it out when dropping, since custom Drop
-/// implementation does not allow taking the inner object out of the struct.
+/// Light wrapper around [tokio::net::tcp::OwnedWriteHalf] to stop it from shutting down TCP stream when
+/// it drops.
 #[derive(Debug)]
 pub struct OwnedWriteHalf {
     inner: Option<tcp::OwnedWriteHalf>,

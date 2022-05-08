@@ -8,7 +8,7 @@ use tsyncp::{broadcast, channel, mpsc};
 const COUNT: u64 = 100_000;
 const ADDR: &str = "localhost:8001";
 
-#[derive(Clone, Message)]
+#[derive(Message)]
 struct Dummy {
     #[prost(string, tag = "1")]
     field1: String,
@@ -30,7 +30,7 @@ async fn main() {
 
 async fn try_main() -> Result<()> {
     let handle1 = tokio::spawn(async move {
-        let mut ch: channel::ProtobufChannel<Dummy> = channel::channel_on(ADDR)
+        let mut ch: channel::ProstChannel<Dummy> = channel::channel_on(ADDR)
             .filter(|a| {
                 info!("connected to {a}");
                 true
@@ -72,8 +72,8 @@ async fn try_main() -> Result<()> {
         let (rx, tx) = ch.split();
 
         // below two lines are just for showing what types they are.
-        let mut rx: broadcast::ProtobufReceiver<Dummy> = rx;
-        let mut tx: mpsc::ProtobufSender<Dummy> = tx;
+        let mut rx: broadcast::ProstReceiver<Dummy> = rx;
+        let mut tx: mpsc::ProstSender<Dummy> = tx;
 
         let tx_handle = tokio::spawn(async move {
             let now = Instant::now();
@@ -117,7 +117,7 @@ async fn try_main() -> Result<()> {
     });
 
     let handle2 = tokio::spawn(async move {
-        let mut ch: channel::ProtobufChannel<Dummy> = channel::channel_to(ADDR)
+        let mut ch: channel::ProstChannel<Dummy> = channel::channel_to(ADDR)
             .retry(Duration::from_millis(500), 100)
             .await?;
 
@@ -156,8 +156,8 @@ async fn try_main() -> Result<()> {
         let (rx, tx) = ch.split();
 
         // below two lines are just for showing what types they are.
-        let mut rx: broadcast::ProtobufReceiver<Dummy> = rx;
-        let mut tx: mpsc::ProtobufSender<Dummy> = tx;
+        let mut rx: broadcast::ProstReceiver<Dummy> = rx;
+        let mut tx: mpsc::ProstSender<Dummy> = tx;
 
         let tx_handle = tokio::spawn(async move {
             let now = Instant::now();

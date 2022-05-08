@@ -129,6 +129,8 @@ impl VariedLengthDelimitedCodec {
     }
 
     /// Returns `Self` with custom `max_frame_length`
+    ///
+    /// Defaults to `MAX_FRAME_LENGTH = 8 * 1024 * 1024`
     pub fn with_max_frame_length(max_frame_length: usize) -> Self {
         Self {
             max_frame_length,
@@ -138,7 +140,7 @@ impl VariedLengthDelimitedCodec {
 
     /// Create a configured length delimited `Framed`
     ///
-    /// # Examples
+    /// # Example
     ///
     /// ```
     /// use tokio::io::{AsyncRead, AsyncWrite};
@@ -349,7 +351,7 @@ pub mod errors {
 
         /// Check if the error is a connection error.
         ///
-        /// Returns `true` if the error either `reset`, `refused`, `aborted`, 'not connected`, or
+        /// Returns `true` if the error either `reset`, `refused`, `aborted`, `not connected`, or
         /// `broken pipe`.
         ///
         /// This is useful to see if the returned error is from the underlying TCP connection.
@@ -430,7 +432,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use std::iter;
 
-    #[derive(Debug, Clone, Serialize, Deserialize, Dummy, PartialEq)]
+    #[derive(Debug, Serialize, Deserialize, Dummy, PartialEq)]
     struct ExampleStruct {
         #[dummy(faker = "1..2000")]
         example_field1: usize,

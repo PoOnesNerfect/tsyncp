@@ -1,6 +1,6 @@
-use super::frame_codec::VariedLengthDelimitedCodec;
-use super::split::Split;
-use super::Framed;
+//! Contains [StreamPool], which listens from all connections, and broadcasts to all connections.
+
+use super::{frame_codec::VariedLengthDelimitedCodec, Framed, Split};
 use bytes::{Bytes, BytesMut};
 use errors::*;
 use futures::{ready, SinkExt, StreamExt};
@@ -15,6 +15,38 @@ use tokio_util::codec::FramedParts;
 
 type Result<T, E = StreamPoolError> = std::result::Result<T, E>;
 
+/// Pool of byte streams (i.e. TcpStream), which manages receiving and send to the
+/// underlying connections.
+///
+/// First generic parameter `S` is the type of the underlying byte stream, and const generic `N` is
+/// the number of streams when the pool uses an array instead of a vec. When vec is used, `N`
+/// defaults to `0`.
+///
+/// The pool can be made of either a [Vec] of streams, or an array of streams.
+/// When it's an array, it stores the streams in an array on the stack, which may allow better
+/// performance. Array's length is the limit of total number of connections the pool can have, and
+/// current number of streams is kept as a field `len`.
+/// Unused array indices are placed as uninitialized `MaybeUninit` elements.
+/// This implementation does a careful job so that uninitialized memory is never accessed; however,
+/// I do understand that part of the safety concern of using uninitialized memory is that, in the
+/// future, I may forget what part of the code does what and accidently expose the unsafe code.
+///
+/// Therefore, if I find that using an array really has no effect on performance, I will remove
+/// the array implementation completely.
+///
+/// For streaming data from connections, the pool tries to poll every stream in the pool at every
+/// poll event. However, if one of the streams returns a result, it will save the last index of the
+/// stream it was polled, and start polling at the next index in the next poll event.
+///
+/// For sending data to connections, it tries to send to all connections even when encountering an
+/// error with *some* connections. So, it collects all the errors while sending data, and return
+/// them after data is flushed. When an error is encountered, the pool removes the errored stream
+/// from the pool, stores the error, then continues polling to the next stream.
+///
+/// The pool also allows sending data to specific streams. [StreamPool::get_indices] allows
+/// filtering addresses by a given closure and returning filter indices of the streams, and [StreamPool::poll_ready_indices],
+/// and [StreamPool::poll_flush_indices] use these indicies to poll the filter streams. [StreamPool::start_send_filter] takes a closure
+/// to filter streams and send to the specific streams.
 #[derive(Debug)]
 pub struct StreamPool<S, const N: usize = 0> {
     pool: Pool<S, N>,
@@ -38,6 +70,7 @@ enum Pool<S, const N: usize = 0> {
 }
 
 impl<S, const N: usize> StreamPool<S, N> {
+    /// Wrap the given byte stream into [Framed](crate::util::Framed), then push it into the pool.
     pub fn push_stream(&mut self, stream: S, addr: SocketAddr) -> Result<()> {
         let parts = FramedParts::new(stream, VariedLengthDelimitedCodec::new());
 
@@ -45,6 +78,7 @@ impl<S, const N: usize> StreamPool<S, N> {
     }
 }
 
+/// Splits the pool into pool of read-only streams, and pool of write-only streams.
 impl<S, const N: usize> Split for StreamPool<S, N>
 where
     S: Split,
@@ -139,14 +173,19 @@ where
 }
 
 impl<S, const N: usize> StreamPool<S, N> {
+    /// Returns `true` is this pool uses an array to store streams.
     pub fn is_array(&self) -> bool {
         matches!(self.pool, Pool::Array { .. })
     }
 
+    /// Returns `true` is this pool uses a Vec to store streams.
     pub fn is_vec(&self) -> bool {
         !self.is_array()
     }
 
+    /// Returns pool with an array of streams with limit `M`.
+    ///
+    /// Attempt to push a stream when the pool already has `M` streams will return an error.
     pub fn array<const M: usize>() -> StreamPool<S, M> {
         let pool = Pool::Array {
             streams: unsafe { MaybeUninit::uninit().assume_init() },
@@ -160,6 +199,7 @@ impl<S, const N: usize> StreamPool<S, N> {
         }
     }
 
+    /// Returns pool with a vec of streams with no limit or capacity.
     pub fn vec() -> Self {
         let pool = Pool::Vec {
             streams: Vec::new(),
@@ -173,6 +213,7 @@ impl<S, const N: usize> StreamPool<S, N> {
         }
     }
 
+    /// Returns a pool with a vec of streams with a capacity but without limit.
     pub fn with_capacity(capacity: usize) -> Self {
         let pool = Pool::Vec {
             streams: Vec::with_capacity(capacity),
@@ -186,10 +227,13 @@ impl<S, const N: usize> StreamPool<S, N> {
         }
     }
 
-    pub fn with_limit(capacity: usize) -> Self {
+    /// Returns a pool with a vec of streams with a limit.
+    ///
+    /// Attempt to push a stream when the pool already has already reached the limit will return an error.
+    pub fn with_limit(limit: usize) -> Self {
         let pool = Pool::Vec {
-            streams: Vec::with_capacity(capacity),
-            limit: Some(capacity),
+            streams: Vec::with_capacity(limit),
+            limit: Some(limit),
         };
 
         StreamPool {
@@ -199,6 +243,7 @@ impl<S, const N: usize> StreamPool<S, N> {
         }
     }
 
+    /// Returns current number of streams in the pool.
     pub fn len(&self) -> usize {
         match self.pool {
             Pool::Array { len, .. } => len,
@@ -206,6 +251,7 @@ impl<S, const N: usize> StreamPool<S, N> {
         }
     }
 
+    /// Returns total number of streams available in the pool.
     pub fn limit(&self) -> Option<usize> {
         match self.pool {
             Pool::Array { .. } => Some(N),
@@ -213,6 +259,7 @@ impl<S, const N: usize> StreamPool<S, N> {
         }
     }
 
+    /// Returns remote addresses of all streams in the pool.
     pub fn addrs(&self) -> Vec<SocketAddr> {
         let len = self.len();
         let mut addrs = Vec::with_capacity(len);
@@ -224,6 +271,7 @@ impl<S, const N: usize> StreamPool<S, N> {
         addrs
     }
 
+    /// Returns a reference of stream and address at the index.
     pub fn get(&self, index: usize) -> Option<&(Framed<S>, SocketAddr)> {
         match &self.pool {
             Pool::Array { streams, len, .. } => {
@@ -237,6 +285,7 @@ impl<S, const N: usize> StreamPool<S, N> {
         }
     }
 
+    /// Returns a mutable reference of stream and address at the index.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut (Framed<S>, SocketAddr)> {
         match &mut self.pool {
             Pool::Array { streams, len, .. } => {
@@ -250,6 +299,9 @@ impl<S, const N: usize> StreamPool<S, N> {
         }
     }
 
+    /// Push a stream into the pool.
+    ///
+    /// This will return an error if attempted to push a stream while pool is full.
     pub fn push(&mut self, stream: Framed<S>, addr: SocketAddr) -> Result<()> {
         match &mut self.pool {
             Pool::Array { streams, len, .. } => {
@@ -274,6 +326,7 @@ impl<S, const N: usize> StreamPool<S, N> {
         Ok(())
     }
 
+    /// Pops and returns a stream from the pool.
     pub fn pop(&mut self) -> Option<(Framed<S>, SocketAddr)> {
         match &mut self.pool {
             Pool::Array { streams, len, .. } => {
@@ -296,6 +349,7 @@ impl<S, const N: usize> StreamPool<S, N> {
         }
     }
 
+    /// Swaps a stream at the index with the last element, and pops that element.
     pub fn swap_remove(&mut self, index: usize) -> Option<(Framed<S>, SocketAddr)> {
         match &mut self.pool {
             Pool::Array { streams, len, .. } => {
@@ -422,7 +476,7 @@ impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
 }
 
 impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
-    pub(crate) fn get_indices<Filter>(&self, filter: &Filter) -> Vec<usize>
+    pub fn get_indices<Filter>(&self, filter: &Filter) -> Vec<usize>
     where
         Filter: Fn(SocketAddr) -> bool,
     {
@@ -434,7 +488,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
             .collect::<Vec<_>>()
     }
 
-    pub(crate) fn poll_ready_indices(
+    pub fn poll_ready_indices(
         &mut self,
         indices: &mut Vec<usize>,
         cx: &mut std::task::Context<'_>,
@@ -458,7 +512,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         Poll::Ready(())
     }
 
-    pub(crate) fn start_send_filtered<Filter: Fn(SocketAddr) -> bool>(
+    pub fn start_send_filter<Filter: Fn(SocketAddr) -> bool>(
         &mut self,
         item: Bytes,
         filter: &Filter,
@@ -498,7 +552,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         }
     }
 
-    pub(crate) fn poll_flush_indices(
+    pub fn poll_flush_indices(
         &mut self,
         indices: &mut Vec<usize>,
         cx: &mut std::task::Context<'_>,
@@ -821,7 +875,7 @@ pub mod errors {
 
         /// Check if the error is a connection error.
         ///
-        /// Returns `true` if the error either `reset`, `refused`, `aborted`, 'not connected`, or
+        /// Returns `true` if the error either `reset`, `refused`, `aborted`, `not connected`, or
         /// `broken pipe`.
         ///
         /// This is useful to see if the returned error is from the underlying TCP connection.

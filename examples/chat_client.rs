@@ -8,7 +8,7 @@ use tsyncp::channel;
 
 const ADDR: &str = "localhost:8000";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Chat {
     name: String,
     body: String,
@@ -18,18 +18,19 @@ struct Chat {
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
+    let name = get_name()?;
+
+    println!("\nEntering chatroom...");
+
     let ch: channel::JsonChannel<Chat> = channel::channel_to(ADDR)
         .retry(Duration::from_millis(500), 100)
         .await?;
 
     let (mut rx, mut tx) = ch.split();
 
-    let name = get_name()?;
-
-    println!("\nEntering chatroom...");
     println!("Say something!");
 
-    // spawn and read chats from server!
+    // read chats from server!
     tokio::spawn(async move {
         while let Some(chat) = rx.recv().await {
             let chat = chat?;

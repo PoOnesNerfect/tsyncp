@@ -1,9 +1,107 @@
+//! Generic multi-connection channel for sending and receiving items.
+//!
+//! [Channel] is initialized by binding and listening on a local address.
+//! [Channel] can be initialized with [channel_on].
+//!
+//! [channel_on] can take any type of parameter that implements [ToSocketAddrs](std::net::ToSocketAddrs).
+//!
+//! This module also contains the following modules:
+//! - [builder] module: Contains [BuilderFuture](builder::BuilderFuture) used to chaining and building
+//! a Channel.
+//! - [send] module: Contains [SendFuture](send::SendFuture) used to send items.
+//! - [recv] module: Contains [RecvFuture](recv::RecvFuture) used to receive items,
+//! - [accept] module: Contains [AcceptFuture](accept::AcceptFuture) used for accepting
+//! connections, and [ChainedAcceptFuture](accept::ChainedAcceptFuture) used to concurrently
+//! accept connections with underlying future.
+//!
+//! [Skip to APIs](#modules)
+//!
+//! ## Contents
+//! These examples will demonstrate how to initialize a Channel and how to chain configurations when initializing.
+//! * [Example 1](#example-1): Basic initialization.
+//! * [Example 2](#example-2): Chaining futures to initialization.
+//!
+//! To see how you can use the Channel once initialized, see [Channel's documentation](Channel).
+//!
+//! ### Example 1
+//!
+//! Below is the basic example of initializing, accepting, receiving and sending data with
+//! [JsonChannel]. If you want to use a channel with a different codec, just replace `JsonChannel<Dummy>`
+//! with `ProstChannel<Dummy>`, for example, or `Channel<Dummy, CustomCodec>`.
+//!
+//! ```no_run
+//! use tsyncp::multi_channel;
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Debug, Serialize, Deserialize)]
+//! struct Dummy {
+//!     field1: String,
+//!     field2: u64,
+//!     field3: Vec<u8>,
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> color_eyre::Result<()> {
+//!     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000").await?;
+//!
+//!     // Accept 5 connections before sending/receiving `Dummy` items.
+//!     for _ in 0..5 {
+//!         ch.accept().await?;
+//!     }
+//!
+//!     // Receive some item on the channel.
+//!     if let Some(Ok(item)) = ch.recv().await {
+//!         println!("received {item:?}");
+//!
+//!         // Broadcast received item to all connections.
+//!         ch.send(item).await?;
+//!     }
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ### Example 2
+//!
+//! Below is an example of future-chaining for more advanced uses.
+//!
+//! ```no_run
+//! # use tsyncp::multi_channel;
+//! # use serde::{Serialize, Deserialize};
+//! # #[derive(Debug, Serialize, Deserialize)]
+//! # struct Dummy {
+//! #     field1: String,
+//! #     field2: u64,
+//! #     field3: Vec<u8>,
+//! # }
+//! # #[tokio::main]
+//! # async fn main() -> color_eyre::Result<()> {
+//!     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("127.0.0.1:8000")
+//!         .limit(5)                       // Limit total number of allowed connections to 5.
+//!         .accept_to_limit()                  // Accept connections up to the limit before returning.
+//!         .set_tcp_nodelay(true)          // Set tcp option `nodelay` to `true`.
+//!         .set_tcp_reuseaddr(true)        // Set tcp option `reuseaddr` to `true`.
+//!         .await?;
+//!
+//!     // Receive an item and the address where it came from.
+//!     if let Some(Ok((item, addr))) = ch.recv().with_addr().await {
+//!         println!("received {item:?} from {addr}");
+//!
+//!         // Broadcast received item to all connections except where it came from.
+//!         ch.send(item).filter(|a| a != addr).await?;
+//!     }
+//!
+//! #     Ok(())
+//! # }
+//! ```
+//!
+//! All configurable chain futures for `channel_on` are in [builder] module.
+
 use crate::util::codec::{DecodeMethod, EncodeMethod};
 use crate::util::stream_pool::StreamPool;
 use crate::util::{
-    accept::Accept,
     listener::{ListenerWrapper, ReadListener, WriteListener},
-    split::Split,
+    Accept, Split,
 };
 use crate::{broadcast, mpsc};
 use errors::*;
@@ -22,30 +120,512 @@ pub mod builder;
 pub mod recv;
 pub mod send;
 
+/// Type alias for `Channel<T, tsyncp::util::codec::JsonCodec>`.
 #[cfg(feature = "json")]
 pub type JsonChannel<T, const N: usize = 0> = Channel<T, crate::util::codec::JsonCodec, N>;
 
+/// Type alias for `Channel<T, tsyncp::util::codec::ProstCodec>`.
 #[cfg(feature = "protobuf")]
-pub type ProtobufChannel<T, const N: usize = 0> = Channel<T, crate::util::codec::ProtobufCodec, N>;
+pub type ProstChannel<T, const N: usize = 0> = Channel<T, crate::util::codec::ProstCodec, N>;
 
+/// Type alias for `Channel<T, tsyncp::util::codec::BincodeCodec>`.
 #[cfg(feature = "bincode")]
 pub type BincodeChannel<T, const N: usize = 0> = Channel<T, crate::util::codec::BincodeCodec, N>;
 
-#[cfg(feature = "rkyv")]
-pub type RkyvChannel<T, const N: usize = 0> = Channel<T, crate::util::codec::RkyvCodec, N>;
+// #[cfg(feature = "rkyv")]
+// pub type RkyvChannel<T, const N: usize = 0> = Channel<T, crate::util::codec::RkyvCodec, N>;
 
+/// Method to initialize [Channel]. Returns a [BuilderFuture](builder::BuilderFuture)
+/// which can be chained with other futures to configure the initialization.
+///
+/// To see how you can chain more configurations to this method, see [BuilderFuture](builder::BuilderFuture).
+///
+/// ```no_run
+/// use tsyncp::multi_channel;
+/// use serde::{Serialize, Deserialize};
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy {
+///     field1: String,
+///     field2: u64,
+///     field3: Vec<u8>,
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> color_eyre::Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000").await?;
+///
+///     // Accept 5 connections before sending/receiving `Dummy` items.
+///     for _ in 0..5 {
+///         ch.accept().await?;
+///     }
+///
+///     // Receive some item on the channel.
+///     if let Some(Ok(item)) = ch.recv().await {
+///         println!("received {item:?}");
+///
+///         // Broadcast received item to all connections.
+///         ch.send(item).await?;
+///     }
+///
+///     Ok(())
+/// }
 pub fn channel_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     local_addr: A,
-) -> builder::ChannelBuilderFuture<
-    A,
-    T,
-    E,
-    impl Clone + Fn(SocketAddr) -> bool,
-    impl Future<Output = builder::Result<Channel<T, E>>>,
-> {
+) -> builder::BuilderFuture<A, T, E, impl Future<Output = builder::Result<Channel<T, E>>>> {
     builder::new_multi(local_addr)
 }
 
+/// Multi-connection channel that can send/receive data from all connected streams.
+///
+/// ## Generic Parameters
+///
+/// Currently, `Channel` has 4 generic paramters, which 2 of them are defaulted. I will go over them real quick.
+///
+/// First paramter, `T`, as you could guess, is the data type this channel is sending and receiving.
+/// Technically, we could make `Channel` send/recv any item without having to specify its type; however,
+/// specifying the type as part of the channel is better because it clears up what the channel
+/// expects to send and receive. If the sender could send any item type, there is no way for the
+/// receiver to know which type to decode it to.
+///
+/// Second parameter, `E`, is the codec type; here, you can specify anything that implements [EncodeMethod](crate::util::codec::EncodeMethod)
+/// and [DecodeMethod](crate::util::codec::DecodeMethod). For Json, Protobuf, and Bincode, there
+/// are already type aliases called `JsonChannel<T>`, `ProstChannel<T>`, and `BincodeChannel<T>`
+/// which is a little easier than typing `Channel<T, tsyncp::util::codec::JsonCodec>`, and so on.
+///
+/// Third paramter, `const N: usize = 0`, is defaulted to 0, so the user does not have to specify
+/// it unless necessary. This paramter represents the length of the array used for the [StreamPool](crate::util::stream_pool::StreamPool),
+/// if the user chooses to use an array instead of a vec. If `N` is `0` as defaulted, the stream
+/// pool initializes with a vec; however, if it is specified to a value greater than 0, through
+/// [BuilderFuture::limit_const()](builder::BuilderFuture::limit_const), then the stream pool
+/// will be initialized as an array. For more in detail, see [StreamPool](crate::util::stream_pool::StreamPool)
+/// and [BuilderFuture::limit_const()](builder::BuilderFuture::limit_const).
+///
+/// Fourth parameter, `L`, is a listener type that implements [Accept](crate::util::accept::Accept)
+/// trait. The user will not have to interact with parameter ever. This parameter is generic so
+/// that the listener could be split off into [ReadListener](crate::util::listener::ReadListener)
+/// and [WriteListener](crate::util::listener::WriteListener) when splitting `Channel` into
+/// [Receiver](crate::mpsc::Receiver) and [Sender](crate::broadcast::Sender) pair, as will be shown
+/// in the example below.
+///
+/// ## Gettings Started
+///
+/// Since initializing the channel is demonstrated in [multi_channel](crate::multi_channel) module,
+/// we will go over some methods you can use with Channel.
+///
+/// Also, you can [split](Channel::split) the channel into [mpsc::Receiver](crate::mpsc::Receiver)
+/// and [broadcast::Sender](crate::broadcast::Sender) pair to send and receive data concurrently.
+/// See example for this in [Example 9](#example-9-concurrently-send-and-recv-data).
+///
+/// [Skip to APIs](#implementations)
+///
+/// ## Contents
+/// * [Example 1](#example-1-sending-items-to-specific-addresses): Sending items to specific addresses.
+/// * [Example 2](#example-2-sending-items-by-filtering-addresses): Sending items by filtering addresses.
+/// * [Example 3](#example-3-accepting-connections-while-sending-items): Accepting connections
+/// while sending items.
+/// * [Example 4](#example-4-chaining-all-futures-to-send): Chaining all futures to `send`.
+/// * [Example 5](#example-5-receiving-items-as-bytes): Receiving items as bytes.
+/// * [Example 6](#example-6-receiving-items-with-remote-address): Receiving items with remote address.
+/// * [Example 7](#example-7-accepting-connections-while-receiving-items): Accepting connections while
+/// receiving items.
+/// * [Example 8](#example-8-chaining-all-futures-to-recv): Chaining all futures to `recv`.
+/// * [Example 9](#example-9-concurrently-send-and-recv-data): Concurrently send and recv data.
+/// * [Error Handling](#error-handling): How to handle different types of errors.
+///
+/// ### Example 1: Sending Items to Specific Addresses
+///
+/// You can actually choose which addresses you can send the items to.
+///
+/// ```no_run
+/// use color_eyre::Result;
+/// use serde::{Serialize, Deserialize};
+/// use tsyncp::multi_channel;
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy {
+///     field1: String,
+///     field2: u64,
+///     field3: Vec<u8>,
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .accept(10)
+///         .await?;
+///
+///     // Get all the addresses where the ports are even.
+///     let addrs = ch
+///         .peer_addrs()
+///         .into_iter()
+///         .filter(|a| a.port() % 2 == 0)
+///         .collect::<Vec<_>>();
+///
+///     let dummy = Dummy {
+///         field1: String::from("hello world"),
+///         field2: 1234567,
+///         field3: vec![1, 2, 3, 4]
+///     };
+///
+///     // Send to only the addresses in `addrs` vec.
+///     ch.send(dummy).to(&addrs).await?;
+///
+///     Ok(())
+/// }
+/// ```
+///
+/// ### Example 2: Sending Items by Filtering Addresses
+///
+/// You can also send to addresses that match certain criteria.
+///
+/// ```no_run
+/// # use color_eyre::Result;
+/// # use serde::{Serialize, Deserialize};
+/// # use tsyncp::multi_channel;
+/// # #[derive(Debug, Serialize, Deserialize)]
+/// # struct Dummy {
+/// #     field1: String,
+/// #     field2: u64,
+/// #     field3: Vec<u8>,
+/// # }
+/// # #[tokio::main]
+/// # async fn main() -> Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .accept(10)
+///         .await?;
+///
+///     let dummy = Dummy {
+///         field1: String::from("hello world"),
+///         field2: 1234567,
+///         field3: vec![1, 2, 3, 4]
+///     };
+///
+///     // Send to only the addresses by filtering the address ports to even values.
+///     ch.send(dummy).filter(|a| a.port() % 2 == 0).await?;
+/// #     Ok(())
+/// # }
+/// ```
+///
+/// ### Example 3: Accepting Connections While Sending Items.
+///
+/// You can concurrently accept connections while sending items.
+///
+/// When item is sent and flushed, the future will return the result along with the accepted addrs
+/// in a tuple.
+///
+/// ```no_run
+/// # use color_eyre::Result;
+/// # use serde::{Serialize, Deserialize};
+/// # use tsyncp::multi_channel;
+/// # #[derive(Debug, Serialize, Deserialize)]
+/// # struct Dummy {
+/// #     field1: String,
+/// #     field2: u64,
+/// #     field3: Vec<u8>,
+/// # }
+/// # #[tokio::main]
+/// # async fn main() -> Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .accept(5)
+///         .await?;
+///
+///     let dummy = Dummy {
+///         field1: String::from("hello world"),
+///         field2: 1234567,
+///         field3: vec![1, 2, 3, 4]
+///     };
+///
+///     // accepting while waiting to send.
+///     let (res, accepted_res) = ch.send(dummy).accepting().await;
+///
+///     for addr in accepted_res? {
+///         println!("accepted connection from {addr}");
+///     }
+///
+///     // see if sending was successful.
+///     res?;
+/// #     Ok(())
+/// # }
+/// ```
+///
+/// ### Example 4: Chaining All Futures to Send
+///
+/// Now, let's try chaining all the futures we learned so far.
+///
+/// We can either only use `to` or `filter`, so we'll just pick `filter`.
+///
+/// ```no_run
+/// # use color_eyre::Result;
+/// # use serde::{Serialize, Deserialize};
+/// # use tsyncp::multi_channel;
+/// # #[derive(Debug, Serialize, Deserialize)]
+/// # struct Dummy {
+/// #     field1: String,
+/// #     field2: u64,
+/// #     field3: Vec<u8>,
+/// # }
+/// # #[tokio::main]
+/// # async fn main() -> Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .accept(10)
+///         .await?;
+///
+///     let dummy = Dummy {
+///         field1: String::from("hello world"),
+///         field2: 1234567,
+///         field3: vec![1, 2, 3, 4]
+///     };
+///
+///     let (res, accepted_res) = ch.send(dummy)
+///         .filter(|a| a.port() % 2 == 0)    // Only send to addresses with even ports.
+///         .accepting()                        // Accept while waiting to send item.
+///         .limit(5)                           // Limit accepting connections to 5.
+///         .await;
+///
+///     for addr in accepted_res? {
+///         println!("accepted connection from {addr}");
+///     }
+///
+///     // see if sending was successful.
+///     res?;
+/// #     Ok(())
+/// # }
+/// ```
+///
+/// ### Example 5: Receiving Items as Bytes
+///
+/// You can receive data as raw bytes before it gets encoded. (if you wanted raw json bytes, for
+/// example)
+///
+/// ```no_run
+/// # use color_eyre::Result;
+/// # use serde::{Serialize, Deserialize};
+/// # use tsyncp::multi_channel;
+/// # #[derive(Debug, Serialize, Deserialize)]
+/// # struct Dummy {
+/// #     field1: String,
+/// #     field2: u64,
+/// #     field3: Vec<u8>,
+/// # }
+/// # #[tokio::main]
+/// # async fn main() -> Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .accept(10)
+///         .await?;
+///
+///     /// Receive item and return before decoding it as `Dummy` struct.
+///     if let Some(Ok(bytes)) = ch.recv().as_bytes().await {
+///         /// Print raw json bytes as json object.
+///         println!("json object: {}", std::str::from_utf8(&bytes).unwrap());
+///     }
+/// #     Ok(())
+/// # }
+/// ```
+///
+/// ### Example 6: Receiving Items with Remote Address
+///
+/// You can receive data along with the remote address it came from.
+///
+/// ```no_run
+/// # use color_eyre::Result;
+/// # use serde::{Serialize, Deserialize};
+/// # use tsyncp::multi_channel;
+/// # #[derive(Debug, Serialize, Deserialize)]
+/// # struct Dummy {
+/// #     field1: String,
+/// #     field2: u64,
+/// #     field3: Vec<u8>,
+/// # }
+/// # #[tokio::main]
+/// # async fn main() -> Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .accept(10)
+///         .await?;
+///
+///     /// Receive item and return before decoding it as `Dummy` struct.
+///     if let Some(Ok((item, addr))) = ch.recv().with_addr().await {
+///         println!("received {item:?} from {addr}");
+///     }
+/// #     Ok(())
+/// # }
+/// ```
+///
+/// You can chain `as_bytes` and `with_addr` to receive raw bytes with addr.
+///
+/// ```no_run
+/// # use color_eyre::Result;
+/// # use serde::{Serialize, Deserialize};
+/// # use tsyncp::multi_channel;
+/// # #[derive(Debug, Serialize, Deserialize)]
+/// # struct Dummy {
+/// #     field1: String,
+/// #     field2: u64,
+/// #     field3: Vec<u8>,
+/// # }
+/// # #[tokio::main]
+/// # async fn main() -> Result<()> {
+/// #    let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+/// #        .accept(10)
+/// #        .await?;
+///     if let Some(Ok((bytes, addr))) = ch.recv().as_bytes().with_addr().await {
+///         println!("received {} from {addr}", std::str::from_utf8(&bytes).unwrap());
+///     }
+/// #     Ok(())
+/// # }
+/// ```
+///
+/// ### Example 7: Accepting Connections While Receiving Items.
+///
+/// You can concurrently accept connections while you are receiving items.
+/// When an item is received, it will return the item along with the accept result in a tuple.
+///
+/// ```no_run
+/// # use color_eyre::Result;
+/// # use serde::{Serialize, Deserialize};
+/// # use tsyncp::multi_channel;
+/// # #[derive(Debug, Serialize, Deserialize)]
+/// # struct Dummy {
+/// #     field1: String,
+/// #     field2: u64,
+/// #     field3: Vec<u8>,
+/// # }
+/// # #[tokio::main]
+/// # async fn main() -> Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .accept(10)
+///         .await?;
+///
+///     if let (Some(Ok(item)), Ok(())) = ch.recv().accepting().await {
+///         println!("received {item:?}");
+///     }
+/// #     Ok(())
+/// # }
+/// ```
+///
+/// Above example will accept up to `10` connections since limit was set to 10. However, if no
+/// limit was set during initialization, it will accept any number of incoming connections.
+///
+/// You can also set custom limit for accepting connections by chaining it.
+///
+/// ```no_run
+/// # use color_eyre::Result;
+/// # use serde::{Serialize, Deserialize};
+/// # use tsyncp::multi_channel;
+/// # #[derive(Debug, Serialize, Deserialize)]
+/// # struct Dummy {
+/// #     field1: String,
+/// #     field2: u64,
+/// #     field3: Vec<u8>,
+/// # }
+/// # #[tokio::main]
+/// # async fn main() -> Result<()> {
+/// #    let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+/// #        .accept(10)
+/// #        .await?;
+///     if let (Some(Ok(item)), Ok(accepted_addrs)) = ch.recv().accepting().limit(5).await {
+///         for addr in accepted_addrs {
+///             println!("accepted connection from {addr}");
+///         }
+///
+///         println!("received {item:?}");
+///     }
+/// #     Ok(())
+/// # }
+/// ```
+///
+/// This will only accept 5 connections while receiving items, regardless of the limit of the
+/// channel. However, if the limit of the channel is less than 5, it will only accept to the
+/// channel's limit.
+///
+/// ### Example 8: Chaining All Futures to Recv.
+///
+/// For our last example, we will chain all available futures to `recv` method.
+///
+/// ```no_run
+/// # use color_eyre::Result;
+/// # use serde::{Serialize, Deserialize};
+/// # use tsyncp::multi_channel;
+/// # #[derive(Debug, Serialize, Deserialize)]
+/// # struct Dummy {
+/// #     field1: String,
+/// #     field2: u64,
+/// #     field3: Vec<u8>,
+/// # }
+/// # #[tokio::main]
+/// # async fn main() -> Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .accept(10)
+///         .await?;
+///
+///     if let (Some(Ok((bytes, addr))), Ok(accepted_addrs)) = ch
+///         .recv()
+///         .with_addr()                // Receive with address.
+///         .as_bytes()                 // Receive item as un-decoded bytes.
+///         .accepting()                // Accept connections while receiving.
+///         .limit(5)                   // Limit accepting connections to 5.
+///         .await
+///     {
+///         for addr in accepted_addrs {
+///             println!("accepted connection from {addr}");
+///         }
+///
+///         println!("received {} from {addr}", std::str::from_utf8(&bytes).unwrap());
+///     }
+/// #     Ok(())
+/// # }
+/// ```
+///
+/// ### Example 9: Concurrently Send and Recv Data.
+///
+/// You can split the channel to send and receive items at the same time.
+///
+/// ```no_run
+/// use color_eyre::Result;
+/// use serde::{Serialize, Deserialize};
+/// use tsyncp::{multi_channel, mpsc, broadcast};
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy {
+///     field1: String,
+///     field2: u64,
+///     field3: Vec<u8>,
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     let ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+///         .limit(10)
+///         .accept_to_limit()
+///         .await?;
+///
+///     let (rx, tx) = ch.split();
+///
+///     // Below two lines are unnecessary, they are just to show the types `split` returns.
+///     let mut rx: mpsc::JsonReceiver<Dummy> = rx;
+///     let mut tx: broadcast::JsonSender<Dummy> = tx;
+///
+///     tokio::spawn(async move {
+///         while let (Some(Ok(item)), _) = rx.recv().accepting().await {
+///             println!("received {item:?}");
+///         }
+///     });
+///
+///     for i in 0..1_000_000 {
+///         let dummy = Dummy {
+///             field1: String::from("hello world"),
+///             field2: i,
+///             field3: vec![1, 2, 3, 4]
+///         };
+///
+///         tx.send(dummy).await?;
+///     }
+///
+///     Ok(())
+/// }
+/// ```
+///
+/// Of course, you can still chain all the futures as we did before.
 #[derive(Debug)]
 #[pin_project::pin_project]
 pub struct Channel<T, E, const N: usize = 0, L = TcpListener>
@@ -60,27 +640,60 @@ where
     _phantom: PhantomData<(T, E)>,
 }
 
+impl<T, E, const N: usize, L> AsMut<Channel<T, E, N, L>> for Channel<T, E, N, L>
+where
+    L: Accept,
+{
+    fn as_mut(&mut self) -> &mut Channel<T, E, N, L> {
+        self
+    }
+}
+
 impl<T, E, const N: usize, L> Channel<T, E, N, L>
 where
     L: Accept,
 {
+    /// Returns the currently connected number of connections.
     pub fn len(&self) -> usize {
         self.stream_pool.len()
     }
 
+    /// Returns the total allowed number of connections.
+    ///
+    /// Trying to accept connections when full will result in an error.
     pub fn limit(&self) -> Option<usize> {
         self.stream_pool.limit()
     }
 
+    /// Returns whether the connection limit is reached.
+    ///
+    /// If there is no limit, it will always return `false`.
+    pub fn is_full(&self) -> bool {
+        self.stream_pool
+            .limit()
+            .map(|lim| self.len() >= lim)
+            .unwrap_or(false)
+    }
+
+    /// Returns the local address this channel is bound to.
     pub fn local_addr(&self) -> &SocketAddr {
         &self.local_addr
     }
 
+    /// Returns vec of all connected remote addresses.
     pub fn peer_addrs(&self) -> Vec<SocketAddr> {
         self.stream_pool.addrs()
     }
 }
 
+/// Split this Channel into [mpsc::Receiver](crate::mpsc::Receiver) and [broadcast::Sender](crate::broadcast::Sender) pair.
+///
+/// This can be used if you want to send and receive data concurrently, or use them in different
+/// threads or tasks.
+///
+/// Beware that, when split, if Receiver accepts connections, it will queue the write half of the
+/// connection to a queue where the limit is 1024, so, if the Sender also does not call accept,
+/// older connections will be lost. Same the other way aronud.
 impl<T, E, const N: usize, L> Channel<T, E, N, L>
 where
     L: Accept,
@@ -189,8 +802,13 @@ impl<T, E, const N: usize, L> Channel<T, E, N, L>
 where
     L: Accept,
 {
-    pub fn accept(&mut self) -> accept::AcceptFuture<'_, T, E, N, L> {
-        accept::AcceptFuture::new(self)
+    /// Returns a future that accepts a connection, pushes the connection to the pool, then returns
+    /// the remote address.
+    pub fn accept(
+        &mut self,
+    ) -> accept::AcceptFuture<'_, T, E, N, L, impl FnMut(SocketAddr), impl FnMut(SocketAddr) -> bool>
+    {
+        accept::AcceptFuture::new(self, |_| {}, |_| true)
     }
 }
 
@@ -200,6 +818,12 @@ where
     E: DecodeMethod<T>,
     L::Output: AsyncRead + Unpin,
 {
+    /// Returns a future that waits and receives an item.
+    ///
+    /// The future can be chained to return with the remote address, or return as raw bytes, or
+    /// accept concurrently while waiting to recv.
+    ///
+    /// **Error condition:** Returns error when
     pub fn recv(&mut self) -> recv::RecvFuture<'_, T, E, N, L> {
         recv::RecvFuture::new(self)
     }
@@ -231,11 +855,14 @@ where
 
 impl<T, E, const N: usize, L> Channel<T, E, N, L>
 where
-    T: Clone,
     E: EncodeMethod<T>,
     L: Accept,
     L::Output: AsyncWrite + Unpin,
 {
+    /// Returns a future that sends and flushes an item to all connections.
+    ///
+    /// The future can be chained to send item to only specific addresses, filter addresses, and
+    /// accept connections concurrently while waiting to send and flush items.
     pub fn send(&mut self, item: T) -> send::SendFuture<'_, T, E, N, L> {
         send::SendFuture::new(self, item)
     }
@@ -243,7 +870,6 @@ where
 
 impl<T, E, const N: usize, L> Sink<T> for Channel<T, E, N, L>
 where
-    T: Clone,
     L: Accept,
     E: EncodeMethod<T>,
     L::Output: AsyncWrite + Unpin,
@@ -390,7 +1016,7 @@ pub mod errors {
             matches!(self, Self::ItemEncode { .. })
         }
 
-        pub fn is_send_error(&self) -> bool {
+        pub fn is_sink_error(&self) -> bool {
             !self.is_encode_error()
         }
 
@@ -482,7 +1108,7 @@ pub mod errors {
 
         /// Check if the error is a connection error.
         ///
-        /// Returns `true` if the error either `reset`, `refused`, `aborted`, 'not connected`, or
+        /// Returns `true` if the error either `reset`, `refused`, `aborted`, `not connected`, or
         /// `broken pipe`.
         ///
         /// This is useful to see if the returned error is from the underlying TCP connection.

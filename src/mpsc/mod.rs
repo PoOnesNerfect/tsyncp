@@ -1,11 +1,165 @@
+//! Multi-producer/Single-consumer API implementation.
+//!
+//! [Sender] is initialized by connecting to a remote address of the single consumer with [sender_to].
+//!
+//! [Receiver] is initialized by listening on a local address with [receiver_on].
+//!
+//! [sender_to] and [receiver_on] can take any type of parameter that implements [ToSocketAddrs](std::net::ToSocketAddrs).
+//!
+//! This module contains few type alias for [Sender] and [Receiver]:
+//! - [JsonSender] and [JsonReceiver]
+//! - [ProstSender] and [ProstReceiver]
+//! - [BincodeSender] and [BincodeReceiver]
+//!
+//! [Skip to APIs](#modules)
+//!
+//! ## Example Contents
+//! These examples will demonstrate how to initialize a Sender and Receiver and how to chain configurations when initializing.
+//! * [Example 1](#example-1): Basic initialization.
+//! * [Example 2](#example-2): Chaining futures to initialization.
+//!
+//! To see how you can use a Sender once initialized, see [Sender's documentation](Sender).
+//! To see how you can use a Receiver once initialized, see [Receiver's documentation](Receiver).
+//!
+//! ### Example 1
+//!
+//! Below is the basic example of initializing, accepting, and receiving data with
+//! [JsonReceiver]. If you want to use a receiver with a different codec, just replace `JsonReceiver<Dummy>`
+//! with `ProstReceiver<Dummy>`, for example, or `Receiver<Dummy, CustomCodec>`.
+//!
+//! ##### Receiver:
+//!
+//! ```no_run
+//! use tsyncp::mpsc;
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Debug, Serialize, Deserialize)]
+//! struct Dummy {
+//!     field1: String,
+//!     field2: u64,
+//!     field3: Vec<u8>,
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> color_eyre::Result<()> {
+//!     let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::receiver_on("localhost:8000").await?;
+//!
+//!     // Receive some item on the receiver.
+//!     if let Some(Ok(item)) = rx.recv().await {
+//!         println!("received {item:?}");
+//!     }
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ##### Sender:
+//!
+//! ```no_run
+//! use tsyncp::mpsc;
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Debug, Serialize, Deserialize)]
+//! struct Dummy {
+//!     field1: String,
+//!     field2: u64,
+//!     field3: Vec<u8>,
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> color_eyre::Result<()> {
+//!     let mut tx: mpsc::JsonSender<Dummy> = mpsc::sender_to("localhost:8000").await?;
+//!
+//!     let dummy = Dummy {
+//!         field1: String::from("hello world"),
+//!         field2: 123123,
+//!         field3: vec![1, 2, 3, 4]
+//!     };
+//!
+//!     tx.send(dummy).await?;
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ### Example 2
+//!
+//! Below is an example of future-chaining for more advanced uses.
+//!
+//! ##### Receiver:
+//!
+//! ```no_run
+//! use tsyncp::mpsc;
+//! use serde::{Serialize, Deserialize};
+//!
+//! #[derive(Debug, Serialize, Deserialize)]
+//! struct Dummy {
+//!     field1: String,
+//!     field2: u64,
+//!     field3: Vec<u8>,
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> color_eyre::Result<()> {
+//!     let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::receiver_on("localhost:8000")
+//!         .limit(5)                       // Limit total number of allowed connections to 5.
+//!         .accept_to_limit()                  // Accept connections up to the limit before returning.
+//!         .set_tcp_nodelay(true)          // Set tcp option `nodelay` to `true`.
+//!         .set_tcp_reuseaddr(true)        // Set tcp option `reuseaddr` to `true`.
+//!         .await?;
+//!
+//!     // Receive some item on the receiver.
+//!     if let Some(Ok(item)) = rx.recv().await {
+//!         println!("received {item:?}");
+//!     }
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ##### Sender:
+//!
+//! ```no_run
+//! use tsyncp::mpsc;
+//! use serde::{Serialize, Deserialize};
+//! use std::time::Duration;
+//!
+//! #[derive(Debug, Serialize, Deserialize)]
+//! struct Dummy {
+//!     field1: String,
+//!     field2: u64,
+//!     field3: Vec<u8>,
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() -> color_eyre::Result<()> {
+//!     let mut tx: mpsc::JsonSender<Dummy> = mpsc::sender_to("localhost:8000")
+//!         .retry(Duration::from_millis(500), 100)     // Retry connecting to remote address 100 times every 500 ms.
+//!         .set_tcp_nodelay(true)                      // Set tcp option `nodelay` to `true`.
+//!         .set_tcp_reuseaddr(true)                    // Set tcp option `reuseaddr` to `true`.
+//!         .await?;
+//!
+//!     let dummy = Dummy {
+//!         field1: String::from("hello world"),
+//!         field2: 123123,
+//!         field3: vec![1, 2, 3, 4]
+//!     };
+//!
+//!     tx.send(dummy).await?;
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! All configurable chain futures for `sender_to` and `receiver_on` are in [builder] module.
+
 use crate::{
     channel,
     multi_channel::{self, accept::AcceptFuture, recv::RecvFuture},
     util::{
-        accept::Accept,
         codec::{DecodeMethod, EncodeMethod},
         listener::ReadListener,
-        tcp,
+        tcp, Accept,
     },
 };
 use futures::Future;
@@ -17,30 +171,36 @@ use tokio::{
 
 pub mod builder;
 
+/// Type alias for `Sender<T, tsyncp::util::codec::JsonCodec>`.
 #[cfg(feature = "json")]
 pub type JsonSender<T> = Sender<T, crate::util::codec::JsonCodec>;
 
+/// Type alias for `Receiver<T, tsyncp::util::codec::JsonCodec>`.
 #[cfg(feature = "json")]
 pub type JsonReceiver<T, const N: usize = 0> = Receiver<T, crate::util::codec::JsonCodec, N>;
 
+/// Type alias for `Sender<T, tsyncp::util::codec::ProstCodec>`.
 #[cfg(feature = "protobuf")]
-pub type ProtobufSender<T> = Sender<T, crate::util::codec::ProtobufCodec>;
+pub type ProstSender<T> = Sender<T, crate::util::codec::ProstCodec>;
 
+/// Type alias for `Receiver<T, tsyncp::util::codec::ProstCodec>`.
 #[cfg(feature = "protobuf")]
-pub type ProtobufReceiver<T, const N: usize = 0> =
-    Receiver<T, crate::util::codec::ProtobufCodec, N>;
+pub type ProstReceiver<T, const N: usize = 0> =
+    Receiver<T, crate::util::codec::ProstCodec, N>;
 
+/// Type alias for `BincodeSender<T, tsyncp::util::codec::BincodeCodec>`.
 #[cfg(feature = "bincode")]
 pub type BincodeSender<T> = Sender<T, crate::util::codec::BincodeCodec>;
 
+/// Type alias for `BincodeReceiver<T, tsyncp::util::codec::BincodeCodec>`.
 #[cfg(feature = "bincode")]
 pub type BincodeReceiver<T, const N: usize = 0> = Receiver<T, crate::util::codec::BincodeCodec, N>;
 
-#[cfg(feature = "rkyv")]
-pub type RkyvSender<T, const N: usize = 0> = Sender<T, crate::util::codec::RkyvCodec>;
+// #[cfg(feature = "rkyv")]
+// pub type RkyvSender<T, const N: usize = 0> = Sender<T, crate::util::codec::RkyvCodec>;
 
-#[cfg(feature = "rkyv")]
-pub type RkyvReceiver<T, const N: usize = 0> = Receiver<T, crate::util::codec::RkyvCodec, N>;
+// #[cfg(feature = "rkyv")]
+// pub type RkyvReceiver<T, const N: usize = 0> = Receiver<T, crate::util::codec::RkyvCodec, N>;
 
 pub fn sender_to<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     dest: A,
@@ -60,7 +220,6 @@ pub fn receiver_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    impl Clone + Fn(SocketAddr) -> bool,
     impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E>>>,
 > {
     builder::new_receiver(local_addr)
@@ -108,6 +267,15 @@ pub struct Receiver<T, E, const N: usize = 0, L: Accept = ReadListener<TcpListen
     #[pin] multi_channel::Channel<T, E, N, L>,
 );
 
+impl<T, E, const N: usize, L> AsMut<multi_channel::Channel<T, E, N, L>> for Receiver<T, E, N, L>
+where
+    L: Accept,
+{
+    fn as_mut(&mut self) -> &mut multi_channel::Channel<T, E, N, L> {
+        &mut self.0
+    }
+}
+
 impl<T, E, const N: usize, L> From<multi_channel::Channel<T, E, N, L>> for Receiver<T, E, N, L>
 where
     L: Accept,
@@ -152,7 +320,9 @@ where
     L: Accept,
     L::Error: 'static,
 {
-    pub fn accept(&mut self) -> AcceptFuture<'_, T, E, N, L> {
+    pub fn accept(
+        &mut self,
+    ) -> AcceptFuture<'_, T, E, N, L, impl FnMut(SocketAddr), impl FnMut(SocketAddr) -> bool> {
         self.0.accept()
     }
 }

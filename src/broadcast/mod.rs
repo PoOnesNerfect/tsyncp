@@ -2,10 +2,9 @@ use crate::{
     channel,
     multi_channel::{self, accept::AcceptFuture, send::SendFuture},
     util::{
-        accept::Accept,
         codec::{DecodeMethod, EncodeMethod},
         listener::WriteListener,
-        tcp,
+        tcp, Accept,
     },
 };
 use futures::Future;
@@ -24,10 +23,10 @@ pub type JsonReceiver<T> = Receiver<T, crate::util::codec::JsonCodec>;
 pub type JsonSender<T, const N: usize = 0> = Sender<T, crate::util::codec::JsonCodec, N>;
 
 #[cfg(feature = "protobuf")]
-pub type ProtobufReceiver<T> = Receiver<T, crate::util::codec::ProtobufCodec>;
+pub type ProstReceiver<T> = Receiver<T, crate::util::codec::ProstCodec>;
 
 #[cfg(feature = "protobuf")]
-pub type ProtobufSender<T, const N: usize = 0> = Sender<T, crate::util::codec::ProtobufCodec, N>;
+pub type ProstSender<T, const N: usize = 0> = Sender<T, crate::util::codec::ProstCodec, N>;
 
 #[cfg(feature = "bincode")]
 pub type BincodeReceiver<T> = Receiver<T, crate::util::codec::BincodeCodec>;
@@ -35,11 +34,11 @@ pub type BincodeReceiver<T> = Receiver<T, crate::util::codec::BincodeCodec>;
 #[cfg(feature = "bincode")]
 pub type BincodeSender<T, const N: usize = 0> = Sender<T, crate::util::codec::BincodeCodec, N>;
 
-#[cfg(feature = "rkyv")]
-pub type RkyvReceiver<T> = Receiver<T, crate::util::codec::RkyvCodec>;
+// #[cfg(feature = "rkyv")]
+// pub type RkyvReceiver<T> = Receiver<T, crate::util::codec::RkyvCodec>;
 
-#[cfg(feature = "rkyv")]
-pub type RkyvSender<T, const N: usize = 0> = Sender<T, crate::util::codec::RkyvCodec, N>;
+// #[cfg(feature = "rkyv")]
+// pub type RkyvSender<T, const N: usize = 0> = Sender<T, crate::util::codec::RkyvCodec, N>;
 
 pub fn sender_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     local_addr: A,
@@ -47,7 +46,6 @@ pub fn sender_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     A,
     T,
     E,
-    impl Clone + Fn(SocketAddr) -> bool,
     impl Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E>>>,
 > {
     builder::new_sender(local_addr)
@@ -91,7 +89,7 @@ impl<T, E, S> Receiver<T, E, S> {
     }
 }
 
-impl<T: Clone, E: DecodeMethod<T>, S: AsyncRead + Unpin> Receiver<T, E, S> {
+impl<T, E: DecodeMethod<T>, S: AsyncRead + Unpin> Receiver<T, E, S> {
     pub fn recv(&mut self) -> crate::channel::recv::RecvFuture<'_, T, E, S> {
         self.0.recv()
     }
@@ -102,6 +100,15 @@ impl<T: Clone, E: DecodeMethod<T>, S: AsyncRead + Unpin> Receiver<T, E, S> {
 pub struct Sender<T, E, const N: usize = 0, L: Accept = WriteListener<TcpListener>>(
     #[pin] multi_channel::Channel<T, E, N, L>,
 );
+
+impl<T, E, const N: usize, L> AsMut<multi_channel::Channel<T, E, N, L>> for Sender<T, E, N, L>
+where
+    L: Accept,
+{
+    fn as_mut(&mut self) -> &mut multi_channel::Channel<T, E, N, L> {
+        &mut self.0
+    }
+}
 
 impl<T, E, const N: usize, L> From<multi_channel::Channel<T, E, N, L>> for Sender<T, E, N, L>
 where
@@ -146,14 +153,15 @@ impl<T, E, const N: usize, L> Sender<T, E, N, L>
 where
     L: Accept,
 {
-    pub fn accept(&mut self) -> AcceptFuture<'_, T, E, N, L> {
+    pub fn accept(
+        &mut self,
+    ) -> AcceptFuture<'_, T, E, N, L, impl FnMut(SocketAddr), impl FnMut(SocketAddr) -> bool> {
         self.0.accept()
     }
 }
 
 impl<T, E, const N: usize, L> Sender<T, E, N, L>
 where
-    T: Clone,
     E: EncodeMethod<T>,
     L: Accept,
     L::Output: AsyncWrite + Unpin,

@@ -28,6 +28,7 @@ bincode = ["serde", "dep:bincode" ]
 bytes = { version = "1" }
 futures = { version = "0.3" }
 pin-project = { version = "1" }
+parking_lot = { version = "0.11" }
 snafu = { version = "0.7", features = ["default", "futures", "backtraces-impl-backtrace-crate"] }
 tokio = { version = "1", features = ["sync", "time", "net", "macros", "io-util", "rt"] }
 tokio-util = { version = "0.7", features = ["codec"] }
