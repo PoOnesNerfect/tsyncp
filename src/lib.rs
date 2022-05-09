@@ -404,7 +404,9 @@
 //! the item as a result of a tuple `Result<(T, SocketAddr)>`.
 //! - [accepting()](multi_channel::recv::RecvFuture::accepting): while waiting to receive data,
 //! concurrently poll accept to try accepting connections. By default, `accepting` accepts
-//! connections up to the limit if limit exists or unlimited if limit does not exist.
+//! connections up to the limit if limit exists or unlimited if limit does not exist. Chaining this
+//! method returns a tuple of results `(Result<T>, Result<usize>)`, where `usize` is the number of
+//! accepted connections.
 //! - [accepting().num(n: usize)](multi_channel::accept::ChainedAcceptFuture::num): sets the
 //! concurrently accepting number of connections to `n`. If `n` is greater than the limit, it will
 //! only accept up to the limit of the channel.
@@ -600,7 +602,7 @@
 //! Since the future sleeps for 10 seconds, it will accept incoming connections for 10 seconds.
 //!
 //! You can also pass references to the async clause, which is handy if you're doing something with
-//! other variables.
+//! outer variables.
 //!
 //! ## Send/Receive on the Same Connection with Channel/MultiChannel
 //!

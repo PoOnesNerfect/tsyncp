@@ -38,6 +38,15 @@ where
     }
 }
 
+impl<'pin, T, E, const N: usize, L, H, F> AsRef<usize> for AcceptFuture<'pin, T, E, N, L, H, F>
+where
+    L: Accept,
+{
+    fn as_ref(&self) -> &usize {
+        &self.accepted
+    }
+}
+
 impl<'pin, T, E, const N: usize, L, H, F> AcceptFuture<'pin, T, E, N, L, H, F>
 where
     L: Accept,
@@ -153,7 +162,7 @@ where
     H: FnMut(SocketAddr),
     F: FnMut(SocketAddr) -> bool,
 {
-    type Output = Result<(), AcceptError<L::Error>>;
+    type Output = Result<usize, AcceptError<L::Error>>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -181,7 +190,7 @@ where
             }
         }
 
-        Poll::Ready(Ok(()))
+        Poll::Ready(Ok(self.accepted))
     }
 }
 
@@ -216,11 +225,14 @@ where
 
 impl<T, E, const N: usize, L, AFut, Fut> Future for UntilAcceptFuture<T, E, N, L, AFut, Fut>
 where
-    AFut: AsRef<Channel<T, E, N, L>> + Future<Output = Result<(), AcceptError<L::Error>>> + Unpin,
+    AFut: AsRef<Channel<T, E, N, L>>
+        + AsRef<usize>
+        + Future<Output = Result<usize, AcceptError<L::Error>>>
+        + Unpin,
     Fut: Future,
     L: Accept,
 {
-    type Output = (Result<(), AcceptError<L::Error>>, Fut::Output);
+    type Output = (Result<usize, AcceptError<L::Error>>, Fut::Output);
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
@@ -234,10 +246,14 @@ where
         let ret = ready!(this.fut.poll(cx));
 
         if this.accept_res.is_none() {
-            this.accept.as_ref().listener.handle_abrupt_drop();
+            let channel: &Channel<T, E, N, L> = this.accept.as_ref();
+            channel.listener.handle_abrupt_drop();
         }
 
-        Poll::Ready((this.accept_res.take().unwrap_or(Ok(())), ret))
+        Poll::Ready((
+            this.accept_res.take().unwrap_or(Ok(*this.accept.as_ref())),
+            ret,
+        ))
     }
 }
 
@@ -385,7 +401,7 @@ where
 
     pub fn filter<F2>(self, filter: F2) -> ChainedAcceptFuture<'pin, T, E, N, L, Fut, H, F2>
     where
-        F2: FnMut(SocketAddr),
+        F2: FnMut(SocketAddr) -> bool,
     {
         let Self {
             fut,
@@ -416,7 +432,7 @@ where
     H: FnMut(SocketAddr),
     F: FnMut(SocketAddr) -> bool,
 {
-    type Output = (Fut::Output, Result<(), AcceptError<L::Error>>);
+    type Output = (Fut::Output, Result<usize, AcceptError<L::Error>>);
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -457,7 +473,7 @@ where
         let output = ready!(self.fut.poll_unpin(cx));
 
         let accept_res = if self.err.is_none() {
-            Ok(())
+            Ok(self.accepted)
         } else {
             Err(self.err.take().unwrap())
         };
