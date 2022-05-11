@@ -22,10 +22,10 @@ pub type JsonReceiver<T> = Receiver<T, crate::util::codec::JsonCodec>;
 #[cfg(feature = "json")]
 pub type JsonSender<T, const N: usize = 0> = Sender<T, crate::util::codec::JsonCodec, N>;
 
-#[cfg(feature = "protobuf")]
+#[cfg(feature = "prost")]
 pub type ProstReceiver<T> = Receiver<T, crate::util::codec::ProstCodec>;
 
-#[cfg(feature = "protobuf")]
+#[cfg(feature = "prost")]
 pub type ProstSender<T, const N: usize = 0> = Sender<T, crate::util::codec::ProstCodec, N>;
 
 #[cfg(feature = "bincode")]

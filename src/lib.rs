@@ -1,10 +1,7 @@
-// #![warn(
-//     missing_debug_implementations,
-//     missing_docs,
-//     rust_2018_idioms,
-//     unreachable_pub
-// )]
-// #![warn(rustdoc::missing_doc_code_examples)]
+#![warn(missing_debug_implementations)]
+#![warn(rust_2018_idioms)]
+#![warn(unreachable_pub)]
+#![warn(rustdoc::missing_doc_code_examples)]
 
 //! Synchronization primitives over TCP for message passing between services.
 //!
@@ -19,10 +16,7 @@
 //! * [multi_channel]: Generic multi-connection channel for sending/receiving data.
 //! Can [split](multi_channel::Channel::split) into [Sender](broadcast::Sender) and [Receiver](mpsc::Receiver) pair.
 //!
-//! **Note:** If an init method ends with `_on` (i.e. [broadcast::sender_on]), it's listening on a local address;
-//! if an init method ends with `_to` (i.e. [mpsc::sender_to]), it's connecting to a remote address.
-//!
-//! See [examples] to see how they can be used in practice.
+//! See [Guide](#guide) below or repository's [examples] to see how they can be used in practice.
 //!
 //! [release]: crate::barrier::Barrier::release
 //! [wait]: crate::barrier::Waiter::wait
@@ -144,6 +138,9 @@
 //!
 //! See [Chaining the Builder Future](#chaining-the-builder-future) and [Chaining the Recv Future](#chaining-the-recv-future) to extend the APIs.
 //!
+//! **Note:** If an init method ends with `_on` (i.e. [mpsc::receiver_on]), it's listening on a local address;
+//! if an init method ends with `_to` (i.e. [broadcast::receiver_to]), it's connecting to a remote address.
+//!
 //! ## Initializing Sender
 //!
 //! You can initialize [mpsc::Sender] by calling [mpsc::sender_to].
@@ -180,11 +177,14 @@
 //! an error `ConnectionRefused`.
 //!
 //! To see how to retry connection and extend the sender APIs, see
-//! [Chaining the Builder Future](#chaining-the-builder-future) and [Chaining the Sender Future](#chaining-the-sender-future).
+//! [Chaining the Builder Future](#chaining-the-builder-future) and [Chaining the Send Future](#chaining-the-send-future).
+//!
+//! **Note:** If an init method ends with `_on` (i.e. [broadcast::sender_on]), it's listening on a local address;
+//! if an init method ends with `_to` (i.e. [mpsc::sender_to]), it's connecting to a remote address.
 //!
 //! ## Features
 //!
-//! By default, `full` feature (`json`, `protobuf`, and `bincode`) is enabled for uses in
+//! By default, `full` feature (`json`, `prost`, and `bincode`) is enabled for uses in
 //! encoding/decoding data.
 //!
 //! If you only need one encoding/decoding scheme, disable `default-features`, and
@@ -195,9 +195,9 @@
 //! ```
 //!
 //! All possible features are:
-//! * [full]: includes all features. (json, protobuf, bincode)
+//! * [full]: includes all features. (json, prost, bincode)
 //! * [json]: serializing/deserializing data as json objects.
-//! * [protobuf]: serializing/deserializing data as protobuf objects.
+//! * [prost]: serializing/deserializing data as protobuf objects.
 //! * [bincode]: encoding/decoding data as compact bytes.
 //!
 //! **WIP** features:
@@ -205,10 +205,10 @@
 //! * `rkyv`: super fast encoding/decoding of data and allows zero-copy deserialization.
 //! * Any other ones I should support?
 //!
-//! [full]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
-//! [json]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
-//! [protobuf]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
-//! [bincode]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L19
+//! [full]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L21
+//! [json]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L22
+//! [prost]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L23
+//! [bincode]: https://github.com/PoOnesNerfect/tsyncp/blob/main/Cargo.toml#L24
 //!
 //! ## Chaining the Builder Future
 //!
@@ -290,7 +290,7 @@
 //! the accepted connections. If the `filter(address)` returns `false`, the connection will be ignored.
 //! You can pass references to the closure, which is useful if you want to do something with outer variables.
 //! - [accept().handle(|a: SocketAddr| -> ())](multi_channel::builder::AcceptBuilderFuture::handle): after a
-//! connection is included to the pool, respond to it immediately with the remote address.
+//! connection is included to the pool, react to it immediately with the remote address.
 //! You can pass references to the closure, which is useful if you want to do something with outer variables.
 //!
 //! ### Chaining the Sender Builder Future
@@ -384,7 +384,7 @@
 //! # }
 //! ```
 //!
-//! [as_bytes()](multi_channel::recv::RecvFuture::as_bytes) receives items as `BytesMut` before being decoded as bytes;
+//! [as_bytes()](multi_channel::recv::RecvFuture::as_bytes) receives items as `BytesMut` before being decoded.
 //!
 //! [with_addr()](multi_channel::recv::RecvFuture::with_addr) returns the remote address the data was sent from.
 //!
@@ -392,7 +392,7 @@
 //! [accepting()](multi_channel::recv::RecvFuture::accepting) can only be appended as the last chain method.
 //! You can chain `accepting` method with sub-configurations such as `num`, `to_limit`, `filter`, `handle` in any order.
 //!
-//! Since `mpsc::Receiver` is a multi-connection channel, you can chain [accepting](multi_channel::recv::RecvFuture::accepting)
+//! Since `mpsc::Receiver` is a multi-connection channel, you can chain [accepting()](multi_channel::recv::RecvFuture::accepting)
 //! to concurrently accept connections while waiting to receive data.
 //! However, [broadcast::Receiver] is a single-connection channel, thus cannot be chained with
 //! `accepting` chain method. See available chain methods for [broadcast::Receiver] at [RecvFuture](channel::recv::RecvFuture).
@@ -416,7 +416,7 @@
 //! while accepting, only accept addresses where the filter closure returns `true`. You can pass
 //! references to the closure, which is useful if you want to do something with outer variables.
 //! - [accepting().handle(|a: SocketAddr| -> ())](multi_channel::accept::ChainedAcceptFuture::handle): after a
-//! connection is included to the pool, respond to it immediately with the remote address. You can
+//! connection is included to the pool, react to it immediately with the remote address. You can
 //! pass references to the closure, which is useful if you want to do something with outer variables.
 //!
 //! ## Chaining the Send Future
@@ -487,7 +487,7 @@
 //! while accepting, only accept addresses where the filter closure returns `true`. You can pass
 //! references to the closure, which is useful if you want to do something with outer variables.
 //! - [accepting().handle(|a: SocketAddr| -> ())](multi_channel::accept::ChainedAcceptFuture::handle): after a
-//! connection is included to the pool, respond to it immediately with the remote address. You can pass
+//! connection is included to the pool, react to it immediately with the remote address. You can pass
 //! references to the closure, which is useful if you want to do something with outer variables.
 //!
 //! ## Chaining the Accept Future
@@ -557,12 +557,13 @@
 //! useful if you want to do something with outer variables.
 //!
 //! [handle(|a: SocketAddr| -> ())](multi_channel::accept::AcceptFuture::handle) lets the user
-//! respond to the newly accepted connection. You can pass references to the closure, which is
+//! react to the newly accepted connection. You can pass references to the closure, which is
 //! useful if you want to do something with outer variables.
 //!
-//! Furthermore, there is also [until(async { .. })](multi_channel::accept::AcceptFuture::until),
-//! which takes a future, then polls accept until this given future finishes. When future
-//! finishes, it returns a tuple of accept result and the future's output `(Result<(), AcceptingError>, Output)`.
+//! Furthermore, there is also [with_future(async { .. })](multi_channel::accept::AcceptFuture::with_future),
+//! which takes a future, then tries accepting connections until this given future finishes. When future
+//! finishes, it returns a tuple of accept result and the future's output `(Result<usize, AcceptingError>, Output)`,
+//! where usize is the number of connections accepted.
 //!
 //! ```no_run
 //! # use color_eyre::Result;
@@ -587,18 +588,21 @@
 //! let (accept_res, _) = rx
 //! .accept()
 //! .handle(|a| println!("{a} connected"))  // print accepted connections.
-//! .until(async {
+//! .with_future(async {
 //!     use std::time::Duration;
 //!     tokio::time::sleep(Duration::from_millis(10_000)).await;
 //!     println!("{}", &x);
 //! })
 //! .await;
-//! accept_res?;
+//!
+//! if let Ok(num) = accept_res {
+//!     println!("accepted {num} connections");
+//! }
 //! #     Ok(())
 //! # }
 //! ```
 //!
-//! Above code will execute the future given to `until(..)`, while accepting connections.
+//! Above code will execute the future given to `with_future(..)`, while accepting connections.
 //! Since the future sleeps for 10 seconds, it will accept incoming connections for 10 seconds.
 //!
 //! You can also pass references to the async clause, which is handy if you're doing something with
@@ -771,7 +775,7 @@
 //! ```
 //!
 //! Currently, [multi_channel] can only be initialized using [multi_channel::channel_on], but I
-//! might add a config in the future such as `.init_connect_to(_)` so that it can initialze outgoing connections as well.
+//! might add a config in the future such as `.init_connect_to(_)` so that it can initialize outgoing connections as well.
 //!
 //! [multi_channel::Channel::split] returns a pair of [mpsc::Receiver] and [broadcast::Sender].
 //!

@@ -1,3 +1,4 @@
+#![warn(missing_docs)]
 //! Generic multi-connection channel for sending and receiving items.
 //!
 //! [Channel] is initialized by binding and listening on a local address.
@@ -124,7 +125,7 @@ pub mod send;
 pub type JsonChannel<T, const N: usize = 0> = Channel<T, crate::util::codec::JsonCodec, N>;
 
 /// Type alias for `Channel<T, tsyncp::util::codec::ProstCodec>`.
-#[cfg(feature = "protobuf")]
+#[cfg(feature = "prost")]
 pub type ProstChannel<T, const N: usize = 0> = Channel<T, crate::util::codec::ProstCodec, N>;
 
 /// Type alias for `Channel<T, tsyncp::util::codec::BincodeCodec>`.
@@ -567,7 +568,8 @@ pub fn channel_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
 /// # #[tokio::main]
 /// # async fn main() -> Result<()> {
 ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-///         .accept(10)
+///         .accept()
+///         .num(10)
 ///         .await?;
 ///
 ///     if let (Some(Ok((bytes, addr))), Ok(num)) = ch
@@ -896,7 +898,9 @@ where
     ///         while let (Some(Ok((item, addr))), Ok(num)) = rx
     ///             .recv()
     ///             .with_addr()
-    ///             .accepting() {
+    ///             .accepting()
+    ///             .await
+    ///         {
     ///             println!("accepted {num} connections.");
     ///             println!("received {item:?} from {addr}");
     ///         }
@@ -906,10 +910,10 @@ where
     ///         let dummy = Dummy {
     ///             field1: String::from("hello world"),
     ///             field2: i,
-    ///             fields3: Vec::new()
+    ///             field3: Vec::new()
     ///         };
     ///
-    ///         let (res, accept_res) = tx.send(dummy).accepting();
+    ///         let (res, accept_res) = tx.send(dummy).accepting().await;
     ///
     ///         let num = accept_res?;
     ///         println!("accepted {num} connections.");

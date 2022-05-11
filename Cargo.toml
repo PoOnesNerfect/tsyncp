@@ -18,9 +18,9 @@ keywords = ["channel", "async", "mpsc", "tcp", "message-passing"]
 
 [features]
 default = ["full"]
-full = ["json", "protobuf", "bincode"]
+full = ["json", "prost", "bincode"]
 json = ["serde", "serde_json"]
-protobuf = ["prost/std"]
+prost = ["dep:prost", "prost/std"]
 bincode = ["serde", "dep:bincode" ]
 # rkyv = ["dep:rkyv", "bytecheck"]
 

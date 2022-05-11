@@ -57,7 +57,8 @@ impl State {
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
 ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-///         .accept(10)
+///         .accept()
+///         .num(10)
 ///         .await?;
 ///
 ///     let dummy = Dummy {
@@ -130,7 +131,8 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-    ///         .accept(10)
+    ///         .accept()
+    ///         .num(10)
     ///         .await?;
     ///
     ///     let dummy = Dummy {
@@ -178,7 +180,8 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-    ///         .accept(10)
+    ///         .accept()
+    ///         .num(10)
     ///         .await?;
     ///
     ///     let dummy = Dummy {
@@ -229,7 +232,8 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-    ///         .accept(10)
+    ///         .accept()
+    ///         .num(10)
     ///         .await?;
     ///
     ///     let dummy = Dummy {
@@ -238,11 +242,10 @@ where
     ///         field3: vec![1, 2, 3, 4]
     ///     };
     ///
-    ///     let (res, accepted_addrs) = ch.send(dummy).accepting().await;
+    ///     let (res, accepted_res) = ch.send(dummy).accepting().await;
     ///
-    ///     for addr in accepted_addrs? {
-    ///         println!("{addr} accepted while sending item")
-    ///     }
+    ///     let num = accepted_res?;
+    ///     println!("accepted {num} connections");
     ///
     ///     res?;
     ///
@@ -337,7 +340,8 @@ impl FilterState {
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
 ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-///         .accept(10)
+///         .accept()
+///         .num(10)
 ///         .await?;
 ///
 ///     let dummy = Dummy {
@@ -422,7 +426,8 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-    ///         .accept(10)
+    ///         .accept()
+    ///         .num(10)
     ///         .await?;
     ///
     ///     let dummy = Dummy {
@@ -431,14 +436,13 @@ where
     ///         field3: vec![1, 2, 3, 4]
     ///     };
     ///
-    ///     let (res, accepted_addrs) = ch
+    ///     let (res, accepted_res) = ch
     ///         .send(dummy)
     ///         .filter(|a| a.port() % 2 == 0)
     ///         .accepting().await;
     ///
-    ///     for addr in accepted_addrs? {
-    ///         println!("{addr} accepted while sending item")
-    ///     }
+    ///     let num = accepted_res?;
+    ///     println!("accepted {num} connections");
     ///
     ///     res?;
     ///

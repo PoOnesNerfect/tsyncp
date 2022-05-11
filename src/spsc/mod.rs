@@ -14,10 +14,10 @@ pub type JsonSender<T> = Sender<T, crate::util::codec::JsonCodec>;
 #[cfg(feature = "json")]
 pub type JsonReceiver<T> = Receiver<T, crate::util::codec::JsonCodec>;
 
-#[cfg(feature = "protobuf")]
+#[cfg(feature = "prost")]
 pub type ProstSender<T> = Sender<T, crate::util::codec::ProstCodec>;
 
-#[cfg(feature = "protobuf")]
+#[cfg(feature = "prost")]
 pub type ProstReceiver<T> = Receiver<T, crate::util::codec::ProstCodec>;
 
 #[cfg(feature = "bincode")]

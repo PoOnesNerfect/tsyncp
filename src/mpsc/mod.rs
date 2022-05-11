@@ -103,9 +103,10 @@
 //! async fn main() -> color_eyre::Result<()> {
 //!     let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::receiver_on("localhost:8000")
 //!         .limit(5)                       // Limit total number of allowed connections to 5.
-//!         .accept_to_limit()                  // Accept connections up to the limit before returning.
 //!         .set_tcp_nodelay(true)          // Set tcp option `nodelay` to `true`.
 //!         .set_tcp_reuseaddr(true)        // Set tcp option `reuseaddr` to `true`.
+//!         .accept()
+//!         .to_limit()                     // Accept connections up to the limit before returning.
 //!         .await?;
 //!
 //!     // Receive some item on the receiver.
@@ -180,19 +181,18 @@ pub type JsonSender<T> = Sender<T, crate::util::codec::JsonCodec>;
 pub type JsonReceiver<T, const N: usize = 0> = Receiver<T, crate::util::codec::JsonCodec, N>;
 
 /// Type alias for `Sender<T, tsyncp::util::codec::ProstCodec>`.
-#[cfg(feature = "protobuf")]
+#[cfg(feature = "prost")]
 pub type ProstSender<T> = Sender<T, crate::util::codec::ProstCodec>;
 
 /// Type alias for `Receiver<T, tsyncp::util::codec::ProstCodec>`.
-#[cfg(feature = "protobuf")]
-pub type ProstReceiver<T, const N: usize = 0> =
-    Receiver<T, crate::util::codec::ProstCodec, N>;
+#[cfg(feature = "prost")]
+pub type ProstReceiver<T, const N: usize = 0> = Receiver<T, crate::util::codec::ProstCodec, N>;
 
-/// Type alias for `BincodeSender<T, tsyncp::util::codec::BincodeCodec>`.
+/// Type alias for `Sender<T, tsyncp::util::codec::BincodeCodec>`.
 #[cfg(feature = "bincode")]
 pub type BincodeSender<T> = Sender<T, crate::util::codec::BincodeCodec>;
 
-/// Type alias for `BincodeReceiver<T, tsyncp::util::codec::BincodeCodec>`.
+/// Type alias for `Receiver<T, tsyncp::util::codec::BincodeCodec>`.
 #[cfg(feature = "bincode")]
 pub type BincodeReceiver<T, const N: usize = 0> = Receiver<T, crate::util::codec::BincodeCodec, N>;
 

@@ -56,9 +56,11 @@ use tsyncp::mpsc;
 
 let mut rx: mpsc::JsonReceiver<DummyStruct> = mpsc::receiver_on("localhost:8000")
     .limit(10)                                      // Set total number of allowed connections to 10.
-    .accept_filter(5, |a| a.port() % 2 == 0)      // Accept 5 connections where the port value is even.
     .set_tcp_nodelay(true)                          // Set tcp nodelay option to true.
     .set_tcp_reuseaddr(true)                        // Set tcp reuseaddr option to true.
+    .accept()
+    .num(5)
+    .filter(|a| a.port() % 2 == 0)                  // Accept 5 connections where the port value is even.
     .await?;
 
 while let (Some(Ok(dummy_bytes, addr)), Ok(accepted_addrs)) = rx

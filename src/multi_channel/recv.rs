@@ -34,7 +34,8 @@ use tokio::io::AsyncRead;
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
 ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-///         .accept(10)
+///         .accept()
+///         .num(10)
 ///         .await?;
 ///
 ///     if let Some(Ok(item)) = ch.recv().await {
@@ -96,7 +97,8 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-    ///         .accept(10)
+    ///         .accept()
+    ///         .num(10)
     ///         .await?;
     ///
     ///     if let Some(Ok(bytes)) = ch.recv().as_bytes().await {
@@ -127,7 +129,8 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-    ///         .accept(10)
+    ///         .accept()
+    ///         .num(10)
     ///         .await?;
     ///
     ///     if let Some(Ok((item, addr))) = ch.recv().with_addr().await {
@@ -163,14 +166,12 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-    ///         .accept(10)
+    ///         .accept()
+    ///         .num(10)
     ///         .await?;
     ///
-    ///     if let (Some(Ok(item)), Ok(accepted_addrs)) = ch.recv().accepting().await {
-    ///         for addr in accepted_addrs {
-    ///             println!("{addr} accepted while receiving item")
-    ///         }
-    ///
+    ///     if let (Some(Ok(item)), Ok(num)) = ch.recv().accepting().await {
+    ///         println!("accepted {num} connections");
     ///         println!("{item:?} received");
     ///     }
     ///
@@ -230,7 +231,8 @@ where
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
 ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-///         .accept(10)
+///         .accept()
+///         .num(10)
 ///         .await?;
 ///
 ///     if let Some(Ok((item, addr))) = ch.recv().with_addr().await {
@@ -292,7 +294,8 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-    ///         .accept(10)
+    ///         .accept()
+    ///         .num(10)
     ///         .await?;
     ///
     ///     if let Some(Ok((bytes, addr))) = ch.recv().with_addr().as_bytes().await {
@@ -328,14 +331,12 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-    ///         .accept(10)
+    ///         .accept()
+    ///         .num(10)
     ///         .await?;
     ///
-    ///     if let (Some(Ok((item, addr))), Ok(accepted_addrs)) = ch.recv().with_addr().accepting().await {
-    ///         for addr in accepted_addrs {
-    ///             println!("{addr} accepted while receiving item")
-    ///         }
-    ///
+    ///     if let (Some(Ok((item, addr))), Ok(num)) = ch.recv().with_addr().accepting().await {
+    ///         println!("accepted {num} connections");
     ///         println!("{item:?} received from {addr}");
     ///     }
     ///
@@ -405,7 +406,8 @@ where
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
 ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-///         .accept(10)
+///         .accept()
+///         .num(10)
 ///         .await?;
 ///
 ///     if let Some(Ok(bytes)) = ch.recv().as_bytes().await {
@@ -467,7 +469,8 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-    ///         .accept(10)
+    ///         .accept()
+    ///         .num(10)
     ///         .await?;
     ///
     ///     if let Some(Ok((bytes, addr))) = ch.recv().as_bytes().with_addr().await {
@@ -503,14 +506,12 @@ where
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-    ///         .accept(10)
+    ///         .accept()
+    ///         .num(10)
     ///         .await?;
     ///
-    ///     if let (Some(Ok(bytes)), Ok(accepted_addrs)) = ch.recv().as_bytes().accepting().await {
-    ///         for addr in accepted_addrs {
-    ///             println!("{addr} accepted while receiving item")
-    ///         }
-    ///
+    ///     if let (Some(Ok(bytes)), Ok(num)) = ch.recv().as_bytes().accepting().await {
+    ///         println!("accepted {num} connections");
     ///         println!("{} received", std::str::from_utf8(&bytes).unwrap());
     ///     }
     ///
@@ -578,7 +579,8 @@ where
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
 ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
-///         .accept(10)
+///         .accept()
+///         .num(10)
 ///         .await?;
 ///
 ///     if let Some(Ok((bytes, addr))) = ch.recv().as_bytes().with_addr().await {

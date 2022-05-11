@@ -231,10 +231,10 @@ mod bincode_mod {
     }
 }
 
-#[cfg(feature = "protobuf")]
-pub use protobuf::*;
-#[cfg(feature = "protobuf")]
-mod protobuf {
+#[cfg(feature = "prost")]
+pub use prost_mod::*;
+#[cfg(feature = "prost")]
+mod prost_mod {
     use super::*;
 
     /// Unit struct that encodes and decodes data as protobuf objects.

@@ -204,6 +204,8 @@ where
     /// ### Example:
     ///
     /// ```no_run
+    /// use tsyncp::barrier;
+    ///
     /// #[tokio::main]
     /// async fn main() -> color_eyre::Result<()> {
     ///     let mut barrier: barrier::Barrier = barrier::barrier_on("localhost:8000")

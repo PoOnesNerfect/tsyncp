@@ -110,7 +110,7 @@ pub mod recv;
 pub type JsonChannel<T> = Channel<T, crate::util::codec::JsonCodec>;
 
 /// Type alias for `Channel<T, tsyncp::util::codec::ProstCodec>`.
-#[cfg(feature = "protobuf")]
+#[cfg(feature = "prost")]
 pub type ProstChannel<T> = Channel<T, crate::util::codec::ProstCodec>;
 
 /// Type alias for `Channel<T, tsyncp::util::codec::BincodeCodec>`.

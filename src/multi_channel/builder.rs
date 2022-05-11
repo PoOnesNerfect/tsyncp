@@ -55,7 +55,6 @@ pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
 /// async fn main() -> color_eyre::Result<()> {
 ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
 ///         .limit(20)              // limit the total number of possible connections to 20.
-///         .accept(10)             // accept 10 connections before returning.
 ///         .set_tcp_linger(Some(Duration::from_millis(10_000)))
 ///         .set_tcp_ttl(60_000)
 ///         .set_tcp_nodelay(true)
@@ -63,6 +62,8 @@ pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
 ///         .set_tcp_reuseport(true)
 ///         .set_tcp_send_buffer_size(8 * 1024 * 1024)
 ///         .set_tcp_recv_buffer_size(8 * 1024 * 1024)
+///         .accept()               // accept 10 connections before returning.
+///         .num(10)
 ///         .await?;
 ///
 ///     Ok(())
@@ -70,8 +71,6 @@ pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
 /// ```
 ///
 /// However, there are some exclusive futures:
-/// - You can only use one of [BuilderFuture::accept], [BuilderFuture::accept_to_limit], [BuilderFuture::accept_filter],
-/// and [BuilderFuture::accept_to_limit_filter].
 /// - You can only use one of [BuilderFuture::limit] and [BuilderFuture::limit_const].
 #[derive(Debug)]
 #[pin_project]
@@ -118,7 +117,8 @@ where
     /// #[tokio::main]
     /// async fn main() -> color_eyre::Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
-    ///         .accept(10)             // accept 10 connections before returning.
+    ///         .accept()               // accept 10 connections before returning.
+    ///         .num(10)
     ///         .await?;
     ///
     ///     Ok(())
@@ -198,7 +198,8 @@ where
     /// async fn main() -> color_eyre::Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy, 10> = multi_channel::channel_on("localhost:8000")
     ///         .limit_const::<10>()                //     ^--- this value must be set. Can be `_`.
-    ///         .accept_to_limit()                      // accept up to the limit (10).
+    ///         .accept()
+    ///         .to_limit()                         // accept up to the limit (10).
     ///         .await?;
     ///
     ///     Ok(())
