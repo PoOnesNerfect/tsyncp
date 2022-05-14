@@ -222,8 +222,8 @@
 //! # #[derive(Debug, Serialize, Deserialize)]
 //! # struct Dummy {
 //! #     field1: String,
-//! #    field2: u64,
-//! #    field3: Vec<u8>,
+//! #     field2: u64,
+//! #     field3: Vec<u8>,
 //! # }
 //! # #[tokio::main]
 //! # async fn main() -> Result<()> {
@@ -301,8 +301,8 @@
 //! # #[derive(Debug, Serialize, Deserialize)]
 //! # struct Dummy {
 //! #     field1: String,
-//! #    field2: u64,
-//! #    field3: Vec<u8>,
+//! #     field2: u64,
+//! #     field3: Vec<u8>,
 //! # }
 //! # #[tokio::main]
 //! # async fn main() -> Result<()> {

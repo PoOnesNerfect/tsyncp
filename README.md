@@ -84,8 +84,8 @@ use tsyncp::mpsc;
 #[derive(Debug, Serialize, Deserialize)]
 struct Dummy {
     field1: String,
-   field2: u64,
-   field3: Vec<u8>,
+    field2: u64,
+    field3: Vec<u8>,
 }
 
 #[tokio::main]
@@ -145,7 +145,9 @@ But you can also extend it by chaining the futures as:
 ```rust
 use color_eyre::{Result, Report};
 use serde::{Serialize, Deserialize};
+use std::time::Duration;
 use tsyncp::mpsc;
+
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Dummy {
@@ -156,14 +158,9 @@ struct Dummy {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    use std::time::Duration;
-
-    let retry_interval = Duration::from_millis(500);
-    let max_retries = 100;
-
     let mut tx: mpsc::JsonSender<Dummy> = mpsc::sender_to("localhost:11114")
-        .retry(retry_interval, max_retries) // retry connecting 100 times every 500 ms.
-        .set_tcp_reuseaddr(true)            // set tcp config reuseaddr to `true`.
+        .retry(Duration::from_millis(500), 100)     // retry connecting 100 times every 500 ms.
+        .set_tcp_reuseaddr(true)                    // set tcp config reuseaddr to `true`.
         .await?;
 
     let dummy = Dummy {
