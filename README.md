@@ -33,7 +33,7 @@ That's why this library uses Future-chaining extensively.
 
 Getting started is as easy as:
 
-### mpsc::Receiver
+## mpsc::Receiver
 
 ```rust
 use tsyncp::mpsc;
@@ -82,7 +82,7 @@ while let (Some(Ok(dummy_bytes, addr)), Ok(accepted_addrs)) = rx
 
 I just vomited a whole bunch of chains, but you can just use any chains that fits your neck.
 
-### mpsc::Sender
+## mpsc::Sender
 
 ```rust
 use tsyncp::mpsc;
