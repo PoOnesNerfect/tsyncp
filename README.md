@@ -44,48 +44,68 @@ Getting started is as easy as:
 ## mpsc::Receiver
 
 ```rust
+use color_eyre::Result;
+use serde::{Serialize, Deserialize};
 use tsyncp::mpsc;
 
-let mut rx: mpsc::JsonReceiver<DummyStruct> = mpsc::receiver_on("localhost:8000").await?;
+#[derive(Debug, Serialize, Deserialize)]
+struct Dummy {
+    field1: String,
+    field2: u64,
+    field3: Vec<u8>,
+}
 
-rx.accept().await?;
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::receiver_on("localhost:11114").await?;
 
-while let Some(Ok(dummy)) = rx.recv().await {
-    println!("received {dummy:?}");
-    // ...handle dummy
+    // accept a new connection coming from a sender application.
+    rx.accept().await?;
+
+    // after accepting connection, you can start receiving data from the receiver.
+    if let Some(Ok(item)) = rx.recv().await {
+        // below line is to show the type of received item.
+        let item: Dummy = item;
+
+        println!("received item: {item:?}");
+    }
+
+    Ok(())
 }
 ```
 
 But you can easily extend it by chaining futures as below:
 
 ```rust
+use color_eyre::{Result, Report};
+use serde::{Serialize, Deserialize};
 use tsyncp::mpsc;
 
-let mut rx: mpsc::JsonReceiver<DummyStruct> = mpsc::receiver_on("localhost:8000")
-    .limit(10)                                      // Set total number of allowed connections to 10.
-    .set_tcp_nodelay(true)                          // Set tcp nodelay option to true.
-    .set_tcp_reuseaddr(true)                        // Set tcp reuseaddr option to true.
-    .accept()
-    .num(5)
-    .filter(|a| a.port() % 2 == 0)                  // Accept 5 connections where the port value is even.
-    .await?;
+#[derive(Debug, Serialize, Deserialize)]
+struct Dummy {
+    field1: String,
+   field2: u64,
+   field3: Vec<u8>,
+}
 
-while let (Some(Ok(dummy_bytes, addr)), Ok(accepted_addrs)) = rx
-    .recv()
-    .as_bytes()                                     // Instead of receiving decoded `DummyStruct`, return raw bytes.
-    .with_addr()                                    // Return remote `SocketAddr` along with data.
-    .accepting()                                    // While waiting to receive, also accept incoming connections.
-    .limit(5)                                       // Only accept up to 5 connections. (defaults to receiver's limit if unspecified)
-    .await
-{
-    println!("received {dummy_bytes:?} from {addr}");
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut rx: mpsc::JsonReceiver<Dummy> = mpsc::receiver_on("localhost:11114")
+        .limit(10)                              // limit allowed connections to 10.
+        .set_tcp_reuseaddr(true)                // set tcp config reuseaddr to `true`.
+        .accept()                               // accept connection. (default: 1)
+        .to_limit()                             // accept until limit is reached. (10)
+        .handle(|a| println!("{a} connected!")) // print address when a connection is accepted.
+        .await?;
 
-    for addr in accepted_addrs {
-        println!("accepted connection from {addr} while waiting to receive data");
+    // At this point, the receiver has 10 connections in the connection pool,
+    // which all have `reuseaddr` as `true`.
+    while let Some(Ok((item, addr))) = rx.recv().with_addr().await {
+        println!("received item: {item:?} from {addr}");
     }
 
-    // ...handle dummy
-}
+    Ok(())
+ }
 ```
 
 I just vomited a whole bunch of chains, but you can just use any chains that fits your neck.
@@ -93,35 +113,70 @@ I just vomited a whole bunch of chains, but you can just use any chains that fit
 ## mpsc::Sender
 
 ```rust
+use color_eyre::{Result, Report};
+use serde::{Serialize, Deserialize};
 use tsyncp::mpsc;
 
-let mut tx: mpsc::JsonSender<DummyStruct> = mpsc::sender_to("localhost:8000").await?;
+#[derive(Debug, Serialize, Deserialize)]
+struct Dummy {
+    field1: String,
+    field2: u64,
+    field3: Vec<u8>,
+}
 
-let dummy = DummyStruct {
-    field1: String::from("hello world"),
-    field2: 123456
-};
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut tx: mpsc::JsonSender<Dummy> = mpsc::sender_to("localhost:11114").await?;
 
-tx.send(dummy).await?;
+    let dummy = Dummy {
+        field1: String::from("hello world"),
+        field2: 1234567,
+        field3: vec![1, 2, 3, 4]
+    };
 
+    tx.send(dummy).await?;
+
+    Ok(())
+}
 ```
 
 But you can also extend it by chaining the futures as:
 
 ```rust
+use color_eyre::{Result, Report};
+use serde::{Serialize, Deserialize};
 use tsyncp::mpsc;
 
-let mut tx: mpsc::JsonSender<DummyStruct> = mpsc::sender_to("localhost:8000")
-    .retry(Duration::from_millis(500), 100)     // retry connecting to receiver 100 times every 500 ms.
-    .set_nodelay(true)                          // set tcp nodelay option to `true`
-    .await?;
+#[derive(Debug, Serialize, Deserialize)]
+struct Dummy {
+    field1: String,
+    field2: u64,
+    field3: Vec<u8>,
+}
 
-let dummy = DummyStruct {
-    field1: String::from("hello world"),
-    field2: 123456
-};
+#[tokio::main]
+async fn main() -> Result<()> {
+    use std::time::Duration;
 
-tx.send(dummy).await?;
+    let retry_interval = Duration::from_millis(500);
+    let max_retries = 100;
+
+    let mut tx: mpsc::JsonSender<Dummy> = mpsc::sender_to("localhost:11114")
+        .retry(retry_interval, max_retries) // retry connecting 100 times every 500 ms.
+        .set_tcp_reuseaddr(true)            // set tcp config reuseaddr to `true`.
+        .await?;
+
+    let dummy = Dummy {
+        field1: String::from("hello world"),
+        field2: 1234567,
+        field3: vec![1, 2, 3, 4]
+    };
+
+    // send some item.
+    tx.send(dummy).await?;
+
+    Ok(())
+}
 ```
 
 The [API documentation](https://docs.rs/tsyncp/) has a very detailed guide on how to use the primitives. So please check them out!
