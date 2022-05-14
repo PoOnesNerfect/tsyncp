@@ -1,5 +1,13 @@
 # tsyncp
 
+[![Crates.io][crates-badge]][crates-url]
+[![MIT licensed][mit-badge]][mit-url]
+
+[crates-badge]: https://img.shields.io/crates/v/tsyncp.svg
+[crates-url]: https://crates.io/crates/tsyncp
+[mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
+[mit-url]: https://github.com/PoOnesNerfect/tsync/blob/main/LICENSE
+
 ### Synchronization primitives over TCP for message passing.
 
 Major rust libraries such as [std] and [tokio] provide great synchronization primitives for
