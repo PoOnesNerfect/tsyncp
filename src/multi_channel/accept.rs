@@ -1,6 +1,8 @@
-//! Contains [AcceptFuture] which accepts and connection, and [ChainedAcceptFuture],
-//! which is chain future to [SendFuture](super::send::SendFuture) and [RecvFuture](super::recv::RecvFuture) for
-//! concurrently accepting connections.
+//! Contains [AcceptFuture], returned by [channel.accept()](crate::multi_channel::Channel::accept),
+//! which accepts a connection;
+//! and [ChainedAcceptFuture], returned by either [recv().accepting()](crate::multi_channel::recv::RecvFuture::accepting)
+//! or [send(_).accepting()](crate::multi_channel::send::SendFuture::accepting),
+//! which concurrently accepts connections while receiving or sending.
 
 use super::{
     errors::{AcceptError, StreamPoolAcceptSnafu},
@@ -185,7 +187,7 @@ where
         self
     }
 
-    /// Accept connections until the limit is reached
+    /// Accept connections until the limit is reached.
     ///
     /// By default, `accept().await` only accepts a single connection.
     ///
@@ -231,9 +233,47 @@ where
         self
     }
 
+    /// React to the address of the connection that was just accepted.
+    ///
+    /// `accept().await` returns `Result<usize, AcceptingError>`, where `usize` is the number of
+    /// connections accepted. It does not return all the addresses that were accepted.
+    ///
+    /// By chaining `handle(|a: SocketAddr| -> ())`, you can react to the address that was just accepted.
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .limit(10)
+    ///         .await?;
+    ///
+    ///     let mut set = std::collections::HashSet::new();
+    ///
+    ///     let num = ch.accept().to_limit().handle(|a| {
+    ///         println!("{a} accepted!");
+    ///         set.insert(a);
+    ///     }).await?;
+    ///
+    ///     println!("accepted {num} connections: {set:?}!");
+    ///     assert_eq!(num, 10);
+    ///
+    ///     Ok(())
+    /// }
+    ///
+    /// ```
     pub fn handle<H2>(self, handle: H2) -> AcceptFuture<'pin, T, E, N, L, H2, F>
     where
-        H2: Fn(SocketAddr),
+        H2: FnMut(SocketAddr),
     {
         let Self {
             channel,
@@ -254,9 +294,50 @@ where
         }
     }
 
+    /// Filter the accepted connections.
+    ///
+    /// `accept().await` by default accepts any incoming connections.
+    ///
+    /// By chaining `filter(|a: SocketAddr| -> bool)`, you can filter which connections to accept.
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .limit(10)
+    ///         .await?;
+    ///
+    ///     let mut set = std::collections::HashSet::new();
+    ///
+    ///     let num = ch.accept().to_limit().filter(|a| {
+    ///         if set.contains(&a) {
+    ///             false
+    ///         } else {
+    ///             set.insert(a);
+    ///             true
+    ///         }
+    ///     }).await?;
+    ///
+    ///     println!("accepted {num} connections: {set:?}!");
+    ///     assert_eq!(num, 10);
+    ///
+    ///     Ok(())
+    /// }
+    ///
+    /// ```
     pub fn filter<F2>(self, filter: F2) -> AcceptFuture<'pin, T, E, N, L, H, F2>
     where
-        F2: Fn(SocketAddr) -> bool,
+        F2: FnMut(SocketAddr) -> bool,
     {
         let Self {
             channel,
@@ -277,6 +358,55 @@ where
         }
     }
 
+    /// Attach a future to concurrently run while accepting.
+    ///
+    /// `with_future(_)` allows you to run a future concurrently while accepting connections.
+    ///
+    /// When used, the future will try accepting connections until the given future finishes.
+    ///
+    /// If you set number to accept with [num(n: usize)](AcceptFuture::num), it will only accept
+    /// til `n` and just wait for the future the finish.
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .limit(10)
+    ///         .await?;
+    ///
+    ///     let x = String::from("future ending");
+    ///     let mut n = 0;
+    ///
+    ///     // Accept connections until the given future is finished.
+    ///     let (accept_res, _) = ch.accept()
+    ///     .filter(|a| a.port() % 2 == 0)
+    ///     .handle(|a| println!("accepted {a}!"))
+    ///     .with_future(async {
+    ///         use std::time::Duration;
+    ///         tokio::time::sleep(Duration::from_millis(10_000)).await;
+    ///         println!("{}", &x);
+    ///         n = 10_000usize;
+    ///     })
+    ///     .await;
+    ///
+    ///     if let Ok(num) = accept_res {
+    ///         println!("accepted {num} connections for {n} ms!");
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    ///
+    /// ```
     pub fn with_future<U>(mut self, until: U) -> WithAcceptFuture<T, E, N, L, Self, U>
     where
         L: Accept,
@@ -337,6 +467,85 @@ where
     }
 }
 
+/// Future returned by [channel.accept(_).with_future(async { .. })](crate::multi_channel::accept::AcceptFuture::with_future).
+///
+/// This chained future will process the given future, and try accepting connections until the
+/// given future completes.
+///
+/// By default, this future will only accept up to the limit if limit is set, or indefinitely until
+/// the given future is finished.
+///
+/// This future must be the last chain.
+///
+/// ## Example 1: Simple chaining
+///
+/// This example accepts 5 connections and prints out `"accepted {a}!"` whenever a connection is
+/// accepted.
+///
+/// ```no_run
+/// use tsyncp::multi_channel;
+/// use serde::{Serialize, Deserialize};
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy {
+///     field1: String,
+///     field2: u64,
+///     field3: Vec<u8>,
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> color_eyre::Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000").await?;
+///
+///     // Accept 5 connections.
+///     ch.accept().num(5).handle(|a| println!("accepted {a}!")).await?;
+///
+///     Ok(())
+/// }
+/// ```
+///
+/// ## Example 2: Advanced chaining
+///
+/// This example accepts connections while waiting for the given future to finish.
+/// Since the future sleeps for 10 seconds, it will accept connections for 10 seconds.
+///
+/// ```no_run
+/// use tsyncp::multi_channel;
+/// use serde::{Serialize, Deserialize};
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy {
+///     field1: String,
+///     field2: u64,
+///     field3: Vec<u8>,
+/// }
+///
+/// #[tokio::main]
+/// async fn main() -> color_eyre::Result<()> {
+///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000").await?;
+///
+///     let x = String::from("future ending");
+///     let mut n = 0;
+///
+///     // Accept connections until the given future is finished.
+///     let (accept_res, _) = ch.accept()
+///     .filter(|a| a.port() % 2 == 0)
+///     .handle(|a| println!("accepted {a}!"))
+///     .with_future(async {
+///         use std::time::Duration;
+///         tokio::time::sleep(Duration::from_millis(10_000)).await;
+///         println!("{}", &x);
+///         n = 10_000usize;
+///     })
+///     .await;
+///
+///     if let Ok(num) = accept_res {
+///         println!("accepted {num} connections for {n} ms!");
+///     }
+///
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 #[pin_project]
 pub struct WithAcceptFuture<T, E, const N: usize, L, AFut, Fut>
@@ -400,10 +609,14 @@ where
     }
 }
 
-/// Future that polls accept concurrently as the future underneath.
+/// Future returned by either [recv().accepting()](crate::multi_channel::recv::RecvFuture::accepting)
+/// or [send(_).accepting()](crate::multi_channel::send::SendFuture::accepting).
 ///
-/// This future completes immediately when the underlying future completes, regardless of if
-/// polling accept completed or not.
+/// This future completes once the underlying future (`send` or `recv`) completes, regardless of if
+/// it accepted any connection or not.
+///
+/// By default, the future will accept up to the limit if limit is set, or indefinitely
+/// until the future chained is finished.
 ///
 /// ```no_run
 /// use color_eyre::Result;
@@ -466,7 +679,16 @@ where
         }
     }
 
-    /// Set the num for accepting connections.
+    fn should_accept(&self) -> bool {
+        self.err.is_none() && self.num.map(|num| self.accepted < num).unwrap_or(true)
+    }
+
+    /// Sets the num for accepting connections.
+    ///
+    /// By default, `accepting()` accepts indefinitely until `recv()` is finished, or until limit
+    /// is reached if limit exists.
+    ///
+    /// By using `.num(n: usize)`, you can limit number of connections this future will accept.
     ///
     /// If the num given is higher than the Channel's set num, it will just use the Channel's
     /// num.
@@ -487,13 +709,13 @@ where
     /// async fn main() -> Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
     ///         .accept()
-    ///         .num(10)
     ///         .await?;
     ///
     ///     // only accept up to 5 connections for this future.
     ///     if let (Some(Ok(item)), Ok(num)) = ch.recv().accepting().num(5).await {
     ///         println!("{item:?} received");
     ///         println!("accepted {num} connections");
+    ///         assert!(num <= 5);
     ///     }
     ///
     ///     Ok(())
@@ -506,19 +728,45 @@ where
         self
     }
 
-    pub fn to_limit(mut self) -> Self {
-        let ch = self.fut.as_ref();
-        let len = ch.len();
-        let limit = ch.limit();
-        self.num = limit.map(|lim| lim - len);
-
-        self
-    }
-
-    fn should_accept(&self) -> bool {
-        self.err.is_none() && self.num.map(|num| self.accepted < num).unwrap_or(true)
-    }
-
+    /// React to the address of the connection that was just accepted.
+    ///
+    /// `accepting().await` returns `(_, Result<usize, AcceptingError>)`, where `usize` is the number of
+    /// connections accepted. It does not return all the addresses that were accepted.
+    ///
+    /// By chaining `handle(|a: SocketAddr| -> ())`, you can react to the address that was just accepted.
+    ///
+    /// ```no_run
+    /// use color_eyre::Result;
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::multi_channel;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+    ///         .accept()
+    ///         .await?;
+    ///
+    ///     let mut set = std::collections::HashSet::new();
+    ///
+    ///     // only accept up to 5 connections for this future.
+    ///     if let (Some(Ok(item)), Ok(num)) = ch.recv().accepting().handle(|a| {
+    ///         set.insert(a);
+    ///         println!("accepted {a}");
+    ///     }).await {
+    ///         println!("{item:?} received");
+    ///         println!("accepted {num} connections: {set:?}");
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn handle<H2>(self, handle: H2) -> ChainedAcceptFuture<'pin, T, E, N, L, Fut, H2, F>
     where
         H2: FnMut(SocketAddr),
@@ -543,6 +791,48 @@ where
         }
     }
 
+    /// Filter the accepted connections.
+    ///
+    /// `accepting().await` by default accepts any incoming connections.
+    ///
+    /// By chaining `filter(|a: SocketAddr| -> bool)`, you can filter which connections to accept.
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+    ///         .accept()
+    ///         .await?;
+    ///
+    ///     let mut set = std::collections::HashSet::new();
+    ///
+    ///     // only accept up to 5 connections for this future.
+    ///     if let (Some(Ok(item)), Ok(num)) = ch.recv().accepting().filter(|a| {
+    ///         if set.contains(&a) {
+    ///             false
+    ///         } else {
+    ///             set.insert(a);
+    ///             true
+    ///         }
+    ///     }).await {
+    ///         println!("{item:?} received");
+    ///         println!("accepted {num} connections: {set:?}");
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    ///
+    /// ```
     pub fn filter<F2>(self, filter: F2) -> ChainedAcceptFuture<'pin, T, E, N, L, Fut, H, F2>
     where
         F2: FnMut(SocketAddr) -> bool,

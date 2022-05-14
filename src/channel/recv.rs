@@ -16,7 +16,8 @@ use snafu::ResultExt;
 use std::task::Poll;
 use tokio::io::AsyncRead;
 
-/// Basic future that returns a received item.
+/// Future returned by [channel.recv()](crate::channel::Channel::recv)
+/// which returns a received item.
 ///
 /// ```no_run
 /// use color_eyre::Result;
@@ -33,9 +34,7 @@ use tokio::io::AsyncRead;
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
-///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_to("localhost:11114")
-///         .retry(Duration::from_millis(500), 100)     // Retry connecting to remote address 100 times every 500 ms.
-///         .await?;
+///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_to("localhost:11114").await?;
 ///
 ///     if let Some(Ok(item)) = ch.recv().await {
 ///         println!("{item:?} received");
@@ -84,9 +83,7 @@ impl<'pin, T, E, S> RecvFuture<'pin, T, E, S> {
     ///
     /// #[tokio::main]
     /// async fn main() -> Result<()> {
-    ///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_on("localhost:11114")
-    ///         .retry(Duration::from_millis(500), 100)     // Retry connecting to remote address 100 times every 500 ms.
-    ///         .await?;
+    ///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_on("localhost:11114").await?;
     ///
     ///     if let Some(Ok(bytes)) = ch.recv().as_bytes().await {
     ///         println!("{} received", std::str::from_utf8(&bytes).unwrap());
@@ -148,9 +145,7 @@ where
 ///
 /// #[tokio::main]
 /// async fn main() -> Result<()> {
-///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_on("localhost:11114")
-///         .retry(Duration::from_millis(500), 100)     // Retry connecting to remote address 100 times every 500 ms.
-///         .await?;
+///     let mut ch: channel::JsonChannel<Dummy> = channel::channel_on("localhost:11114").await?;
 ///
 ///     if let Some(Ok(bytes)) = ch.recv().as_bytes().await {
 ///         println!("{} received", std::str::from_utf8(&bytes).unwrap());

@@ -1,4 +1,3 @@
-#![warn(missing_docs)]
 //! Generic multi-connection channel for sending and receiving items.
 //!
 //! [Channel] is initialized by binding and listening on a local address.
@@ -7,12 +6,12 @@
 //! [channel_on] can take any type of parameter that implements [ToSocketAddrs](std::net::ToSocketAddrs).
 //!
 //! This module also contains the following modules:
-//! - [builder] module: Contains [BuilderFuture](builder::BuilderFuture) used to chaining and building
+//! - [builder] module: Contains [BuilderFuture](builder::BuilderFuture) for chaining and building
 //! a Channel.
-//! - [send] module: Contains [SendFuture](send::SendFuture) used to send items.
-//! - [recv] module: Contains [RecvFuture](recv::RecvFuture) used to receive items,
+//! - [send] module: Contains [SendFuture](send::SendFuture) for send items.
+//! - [recv] module: Contains [RecvFuture](recv::RecvFuture) for receive items,
 //! - [accept] module: Contains [AcceptFuture](accept::AcceptFuture) used for accepting
-//! connections, and [ChainedAcceptFuture](accept::ChainedAcceptFuture) used to concurrently
+//! connections, and [ChainedAcceptFuture](accept::ChainedAcceptFuture) for concurrently
 //! accept connections with underlying future.
 //!
 //! [Skip to APIs](#modules)
@@ -26,8 +25,9 @@
 //!
 //! ### Example 1
 //!
-//! Below is the basic example of initializing, accepting, receiving and sending data with
-//! [JsonChannel]. If you want to use a channel with a different codec, just replace `JsonChannel<Dummy>`
+//! Below is the basic example of initializing, accepting, receiving and sending data with [JsonChannel].
+//!
+//! If you want to use a channel with a different codec, just replace `JsonChannel<Dummy>`
 //! with `ProstChannel<Dummy>`, for example, or `Channel<Dummy, CustomCodec>`.
 //!
 //! ```no_run
@@ -45,10 +45,10 @@
 //! async fn main() -> color_eyre::Result<()> {
 //!     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000").await?;
 //!
-//!     // Accept 5 connections.
-//!     ch.accept().num(5).await?;
+//!     // Accept a connection.
+//!     ch.accept().await?;
 //!
-//!     // Receive some item on the channel.
+//!     // Receive some item from all connections on the channel.
 //!     if let Some(Ok(item)) = ch.recv().await {
 //!         println!("received {item:?}");
 //!
@@ -95,7 +95,9 @@
 //! # }
 //! ```
 //!
-//! All configurable chain futures for `channel_on` are in [builder] module.
+//! Builder future's configurable chain futures are in [builder] module.
+//!
+//! For extending Channel's `send` and `recv`, see documentaion for [Channel].
 
 use crate::util::codec::{DecodeMethod, EncodeMethod};
 use crate::util::stream_pool::StreamPool;
@@ -231,7 +233,6 @@ pub fn channel_on<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
 /// receiving items.
 /// * [Example 8](#example-8-chaining-all-futures-to-recv): Chaining all futures to `recv`.
 /// * [Example 9](#example-9-concurrently-send-and-recv-data): Concurrently send and recv data.
-/// * [Error Handling](#error-handling): How to handle different types of errors.
 ///
 /// ### Example 1: Sending Items to Specific Addresses
 ///
@@ -847,14 +848,6 @@ where
     }
 }
 
-/// Split this Channel into [mpsc::Receiver](crate::mpsc::Receiver) and [broadcast::Sender](crate::broadcast::Sender) pair.
-///
-/// This can be used if you want to send and receive data concurrently, or use them in different
-/// threads or tasks.
-///
-/// Beware that, when split, if Receiver accepts connections, it will queue the write half of the
-/// connection to a queue where the limit is 1024, so, if the Sender also does not call accept,
-/// older connections will be lost. Same the other way aronud.
 impl<T, E, const N: usize, L> Channel<T, E, N, L>
 where
     L: Accept,
@@ -862,8 +855,14 @@ where
     <L::Output as Split>::Left: fmt::Debug,
     <L::Output as Split>::Right: fmt::Debug,
 {
-    /// Splits the channel into [mpsc::Receiver](crate::mpsc::Receiver) and
-    /// [broadcast::Sender](crate::broadcast::Sender) pair.
+    /// Split this Channel into [mpsc::Receiver](crate::mpsc::Receiver) and [broadcast::Sender](crate::broadcast::Sender) pair.
+    ///
+    /// This can be used if you want to send and receive data concurrently, or use them in different
+    /// threads or tasks.
+    ///
+    /// Beware that, when split, if Receiver accepts connections, it will queue the write half of the
+    /// connection to a write accept queue where the limit is 1024, so, if the Sender also does not call accept,
+    /// older connections will be lost. Same the other way aronud.
     ///
     /// These receiver and sender can be passed into another thread or task and be used
     /// concurrently.
@@ -1074,10 +1073,39 @@ where
     E: DecodeMethod<T>,
     L::Output: AsyncRead + Unpin,
 {
-    /// Returns a future that waits and receives an item.
+    /// Returns a [RecvFuture](recv::RecvFuture) that waits and receives an item.
     ///
     /// The future can be chained to return with the remote address, or return as raw bytes, or
     /// accept concurrently while waiting to recv.
+    ///
+    /// To see the chain methods, see [RecvFuture](recv::RecvFuture).
+    ///
+    /// ```no_run
+    /// use color_eyre::Result;
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::multi_channel;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+    ///         .accept()
+    ///         .num(10)
+    ///         .await?;
+    ///
+    ///     if let Some(Ok(item)) = ch.recv().await {
+    ///         println!("item: {item:?}");
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn recv(&mut self) -> recv::RecvFuture<'_, T, E, N, L> {
         recv::RecvFuture::new(self)
     }
@@ -1113,10 +1141,43 @@ where
     L: Accept,
     L::Output: AsyncWrite + Unpin,
 {
-    /// Returns a future that sends and flushes an item to all connections.
+    /// Returns [SendFuture](send::SendFuture) that sends and flushes an item to all connections.
     ///
     /// The future can be chained to send item to only specific addresses, filter addresses, and
     /// accept connections concurrently while waiting to send and flush items.
+    ///
+    /// To see the chain methods, see [SendFuture](send::SendFuture).
+    ///
+    /// ```no_run
+    /// use color_eyre::Result;
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::multi_channel;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+    ///         .accept()
+    ///         .num(10)
+    ///         .await?;
+    ///
+    ///     let dummy = Dummy {
+    ///         field1: String::from("hello world"),
+    ///         field2: 1234567,
+    ///         field3: vec![1, 2, 3, 4]
+    ///     };
+    ///
+    ///     ch.send(dummy).await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn send(&mut self, item: T) -> send::SendFuture<'_, T, E, N, L> {
         send::SendFuture::new(self, item)
     }
@@ -1178,6 +1239,7 @@ where
     }
 }
 
+#[allow(missing_docs)]
 pub mod errors {
     use crate::util::{listener, stream_pool};
     use snafu::{Backtrace, Snafu};
@@ -1204,6 +1266,7 @@ pub mod errors {
         },
     }
 
+    #[derive(Debug)]
     pub struct SinkErrorIterator<'a, I>
     where
         I: Iterator<Item = &'a stream_pool::errors::PollError>,
@@ -1226,6 +1289,7 @@ pub mod errors {
         }
     }
 
+    #[derive(Debug)]
     pub struct SinkErrorIntoIterator<I>
     where
         I: Iterator<Item = stream_pool::errors::PollError>,

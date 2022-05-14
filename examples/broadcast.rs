@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use env_logger::Env;
 use futures::future::try_join_all;
-use log::{error, info};
+use log::info;
 use prost::Message;
 use std::time::{Duration, Instant};
 use tsyncp::broadcast;
@@ -22,16 +22,9 @@ struct Dummy {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    if let Err(error) = try_main().await {
-        error!("Error encountered while running service: \n\n{:?}", error);
-        // error.downcast_ref::<Box<dyn snafu::ErrorCompat + Send + Sync + std::fmt::Debug>>();
-    }
-}
-
-async fn try_main() -> Result<()> {
     let broadcast_handle = tokio::spawn(async move {
         let mut tx: broadcast::ProstSender<Dummy> = broadcast::sender_on(ADDR)
             .limit(LEN)

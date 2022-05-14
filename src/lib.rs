@@ -2,15 +2,15 @@
 #![warn(rust_2018_idioms)]
 #![warn(unreachable_pub)]
 #![warn(rustdoc::missing_doc_code_examples)]
+#![warn(missing_docs)]
 
 //! Synchronization primitives over TCP for message passing between services.
 //!
 //! ## Provided APIs
-//! Currently, **tsyncp** provides 6 types of channels:
+//! Currently, **tsyncp** provides 5 types of channels:
 //! * [mpsc]: Multi-producer/single-consumer channel.
 //! * [broadcast]: Sigle-producer/multi-consumer channel.
 //! * [barrier]: Multiple waiters [wait] for a barrier to [release].
-//! * [spsc]: Single-producer/single-consumer channel.
 //! * [channel]: Generic single-connection channel for sending/receiving data.
 //! Can [split](channel::Channel::split) into [Sender](mpsc::Sender) and [Receiver](broadcast::Receiver) pair.
 //! * [multi_channel]: Generic multi-connection channel for sending/receiving data.
@@ -39,7 +39,6 @@
 //! * [Chaining the Accept Future](#chaining-the-accept-future)
 //! * [Send/Receive on the Same Connection with Channel/MultiChannel](#sendreceive-on-the-same-connection-with-channelmultichannel)
 //! * [Using Custom Encoding/Decoding Methods](#using-custom-encodingdecoding-methods)
-//! * [Error handling](#error-handling)
 //!
 //! ## Initializing Receiver
 //!
@@ -410,8 +409,6 @@
 //! - [accepting().num(n: usize)](multi_channel::accept::ChainedAcceptFuture::num): sets the
 //! concurrently accepting number of connections to `n`. If `n` is greater than the limit, it will
 //! only accept up to the limit of the channel.
-//! - [accepting().to_limit()](multi_channel::accept::ChainedAcceptFuture::to_limit): only accept
-//! connections up to the limit of the channel.
 //! - [accepting().filter(|a: SocketAddr| -> bool)](multi_channel::accept::ChainedAcceptFuture::filter):
 //! while accepting, only accept addresses where the filter closure returns `true`. You can pass
 //! references to the closure, which is useful if you want to do something with outer variables.
@@ -481,8 +478,6 @@
 //! - [accepting().num(n: usize)](multi_channel::accept::ChainedAcceptFuture::num): sets the
 //! concurrently accepting number of connections to `n`. If `n` is greater than the limit, it will
 //! only accept up to the limit of the channel.
-//! - [accepting().to_limit()](multi_channel::accept::ChainedAcceptFuture::to_limit): only accept
-//! connections up to the limit of the channel.
 //! - [accepting().filter(|a: SocketAddr| -> bool)](multi_channel::accept::ChainedAcceptFuture::filter):
 //! while accepting, only accept addresses where the filter closure returns `true`. You can pass
 //! references to the closure, which is useful if you want to do something with outer variables.
@@ -886,5 +881,4 @@ pub mod broadcast;
 pub mod channel;
 pub mod mpsc;
 pub mod multi_channel;
-pub mod spsc;
 pub mod util;

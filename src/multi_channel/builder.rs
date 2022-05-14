@@ -1,6 +1,6 @@
 //! Contains [BuilderFuture] which builds [multi_channel::Channel](super::Channel) when `.await`ed.
 //!
-//! [BuilderFuture] is returned by [channel_on](super::channel_on) function without awaiting it.
+//! [BuilderFuture] is returned by [channel_on](super::channel_on) function.
 //!
 //! Before awaiting the future, you can chain other methods on it to configure the Channel.
 //!
@@ -20,7 +20,7 @@ use std::time::Duration;
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::task::JoinError;
 
-pub type Result<T, E = BuilderError> = std::result::Result<T, E>;
+pub(crate) type Result<T, E = BuilderError> = std::result::Result<T, E>;
 
 pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
     local_addr: A,
@@ -37,7 +37,7 @@ pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
     }
 }
 
-/// Future used to configure and build [Channel](super::Channel).
+/// Future returned by [channel_on(_)](crate::multi_channel::channel_on) to configure and build [Channel](super::Channel).
 ///
 /// Use [channel_on](super::channel_on) function to create the [BuilderFuture].
 ///
@@ -63,14 +63,14 @@ pub(crate) fn new_multi<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
 ///         .set_tcp_send_buffer_size(8 * 1024 * 1024)
 ///         .set_tcp_recv_buffer_size(8 * 1024 * 1024)
 ///         .accept()               // accept 10 connections before returning.
-///         .num(10)
+///         .to_limit()
 ///         .await?;
 ///
 ///     Ok(())
 /// }
 /// ```
 ///
-/// However, there are some exclusive futures:
+/// There is an exclusive future:
 /// - You can only use one of [BuilderFuture::limit] and [BuilderFuture::limit_const].
 #[derive(Debug)]
 #[pin_project]
@@ -105,6 +105,8 @@ where
 {
     /// Before returning a [Channel], first accept the given number of connections.
     ///
+    /// This method must be the last chaining method.
+    ///
     /// ### Example:
     ///
     /// ```no_run
@@ -117,8 +119,7 @@ where
     /// #[tokio::main]
     /// async fn main() -> color_eyre::Result<()> {
     ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
-    ///         .accept()               // accept 10 connections before returning.
-    ///         .num(10)
+    ///         .accept()               // accept a connection before returning.
     ///         .await?;
     ///
     ///     Ok(())
@@ -176,7 +177,7 @@ where
 
     /// Limit the total number of connections this channel can have using const generic usize value.
     ///
-    /// Use this method if you want to use an array instead of a vec for the [connection pool](crate::util::stream_pool::StreamPool)
+    /// Use this method if you want to use an array instead of a vec for the [StreamPool](crate::util::stream_pool::StreamPool)
     /// that handles all the connections.
     /// Using an array on the stack may improve performance by reducing access time to the streams.
     ///
@@ -454,6 +455,12 @@ where
     }
 }
 
+/// Future returned by [channel_on(_).accept()](crate::multi_channel::builder::BuilderFuture::accept).
+///
+/// Before returning [Channel](crate::multi_channel::Channel), this future will first accept a
+/// connection.
+///
+/// You can also chain methods such as `num`, `to_limit`, `handle`, `filter`.
 #[derive(Debug)]
 #[pin_project]
 pub struct AcceptBuilderFuture<Fut, C, T, E, const N: usize, L, H, F> {
@@ -480,6 +487,38 @@ impl<T, C, E, Fut, const N: usize, L, H, F> AcceptBuilderFuture<Fut, C, T, E, N,
         }
     }
 
+    /// Sets the number of connections to accept.
+    ///
+    /// By default, `channel_on(_).accept().await` only accepts a single connection.
+    ///
+    /// By chaining `num(_)`, you can wait for multiple connections.
+    ///
+    /// If the value supplied to the method is greater than the channel's [limit](crate::multi_channel::builder::BuilderFuture::limit),
+    /// it will only accept til the limit value.
+    ///
+    /// Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .accept()
+    ///         .num(10)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn num(mut self, num: usize) -> Self {
         self.num = num;
         self.to_limit = false;
@@ -487,12 +526,74 @@ impl<T, C, E, Fut, const N: usize, L, H, F> AcceptBuilderFuture<Fut, C, T, E, N,
         self
     }
 
+    /// If limit is set, accept connections up to limit.
+    ///
+    /// By default, `channel_on(_).accept().await` only accepts a single connection.
+    ///
+    /// By chaining `to_limit()`, you can wait for multiple connections until limit is reached.
+    ///
+    /// If no limit is set, it will only accept a single connection.
+    ///
+    /// Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .limit(10)
+    ///         .accept()
+    ///         .to_limit()
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn to_limit(mut self) -> Self {
         self.to_limit = true;
 
         self
     }
 
+    /// React to the address of the connection that was just accepted.
+    ///
+    /// `channel_on(_).accept().await` does not return any information about accepted connections.
+    ///
+    /// By chaining `handle(|a: SocketAddr| -> ())`, you can react to the address that was just accepted.
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .limit(10)
+    ///         .accept()
+    ///         .to_limit()
+    ///         .handle(|a| println!("{a} accepted!"))
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    ///
+    /// ```
     pub fn handle<H2>(self, handle: H2) -> AcceptBuilderFuture<Fut, C, T, E, N, L, H2, F>
     where
         H2: FnMut(SocketAddr),
@@ -517,6 +618,36 @@ impl<T, C, E, Fut, const N: usize, L, H, F> AcceptBuilderFuture<Fut, C, T, E, N,
         }
     }
 
+    /// Filter connection to accept by its address.
+    ///
+    /// `channel_on(_).accept().await` accepts any incoming connections.
+    ///
+    /// By chaining `filter(|a: SocketAddr| -> bool)`, you can filter the incoming addresses.
+    ///
+    /// ```no_run
+    /// use tsyncp::multi_channel;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:8000")
+    ///         .limit(10)
+    ///         .accept()
+    ///         .to_limit()
+    ///         .filter(|a| a.port() % 2 == 0)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    ///
+    /// ```
     pub fn filter<F2>(self, filter: F2) -> AcceptBuilderFuture<Fut, C, T, E, N, L, H, F2>
     where
         F2: FnMut(SocketAddr) -> bool,
@@ -675,6 +806,7 @@ where
     })
 }
 
+#[allow(missing_docs)]
 pub mod errors {
     use super::*;
     use snafu::Snafu;

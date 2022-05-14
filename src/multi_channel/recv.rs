@@ -17,7 +17,7 @@ use snafu::ResultExt;
 use std::{net::SocketAddr, task::Poll};
 use tokio::io::AsyncRead;
 
-/// Basic future that returns a received item.
+/// Future returned by [channel.recv()](crate::multi_channel::Channel::recv), which returns a received item.
 ///
 /// ```no_run
 /// use color_eyre::Result;
@@ -80,7 +80,7 @@ where
         Self { channel }
     }
 
-    /// Returns a new future [AsBytesFuture].
+    /// Returns a new future [AsBytesFuture], which receives items as bytes pre-decoded.
     ///
     /// ```no_run
     /// use color_eyre::Result;
@@ -112,7 +112,7 @@ where
         AsBytesFuture::new(self.channel)
     }
 
-    /// Returns a new future [WithAddrFuture].
+    /// Returns a new future [WithAddrFuture], which receives item along with the remote address.
     ///
     /// ```no_run
     /// use color_eyre::Result;
@@ -145,7 +145,7 @@ where
     }
 
     /// Returns [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture) that
-    /// wraps this future.
+    /// accepts connections while receiving items.
     ///
     /// [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture) will poll accept
     /// whenever this future is polled. When this future completes, [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture)
@@ -214,7 +214,8 @@ where
     }
 }
 
-/// Future that returns a tuple of received item and the address it came from.
+/// Returned by [channel.recv().with_addr()](crate::multi_channel::recv::RecvFuture::with_addr) that
+/// returns a tuple of received item and the address it came from.
 ///
 /// ```no_run
 /// use color_eyre::Result;
@@ -277,7 +278,7 @@ where
         Self { channel }
     }
 
-    /// Returns a new future [AsBytesWithAddrFuture].
+    /// Returns a new future [AsBytesWithAddrFuture] which returns bytes pre-decoded.
     ///
     /// ```no_run
     /// use color_eyre::Result;
@@ -310,7 +311,7 @@ where
     }
 
     /// Returns [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture) that
-    /// wraps this future.
+    /// accepts connections while receiving items.
     ///
     /// [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture) will poll accept
     /// whenever this future is polled. When this future completes, [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture)
@@ -389,7 +390,8 @@ where
     }
 }
 
-/// Future that returns bytes of an item before decoding.
+/// Returned by [channel.recv().as_bytes()](crate::multi_channel::recv::RecvFuture::as_bytes)
+/// which returns bytes of an item before decoding.
 ///
 /// ```no_run
 /// use color_eyre::Result;
@@ -627,6 +629,40 @@ where
         Self { channel }
     }
 
+    /// Returns [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture) that
+    /// wraps this future.
+    ///
+    /// [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture) will poll accept
+    /// whenever this future is polled. When this future completes, [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture)
+    /// will also complete, whether or not it accepted any connections.
+    ///
+    /// ```no_run
+    /// use color_eyre::Result;
+    /// use serde::{Serialize, Deserialize};
+    /// use tsyncp::multi_channel;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy {
+    ///     field1: String,
+    ///     field2: u64,
+    ///     field3: Vec<u8>,
+    /// }
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<()> {
+    ///     let mut ch: multi_channel::JsonChannel<Dummy> = multi_channel::channel_on("localhost:11114")
+    ///         .accept()
+    ///         .num(10)
+    ///         .await?;
+    ///
+    ///     if let (Some(Ok((bytes, addr))), Ok(num)) = ch.recv().as_bytes().with_addr().accepting().await {
+    ///         println!("accepted {num} connections");
+    ///         println!("{} received from {addr}", std::str::from_utf8(&bytes).unwrap());
+    ///     }
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn accepting(
         self,
     ) -> ChainedAcceptFuture<

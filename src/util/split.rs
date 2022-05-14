@@ -9,11 +9,17 @@ use tokio_util::codec::FramedParts;
 ///
 /// These split structs are used when splitting a channel into `Receiver` and `Sender` pair.
 pub trait Split: Sized {
+    /// Left half of split item
     type Left;
+    /// Right half of split item
     type Right;
+    /// Error returned by associated method `unsplit(_, _)`.
     type Error: 'static + snafu::Error;
 
+    /// Split self into left and right halfs.
     fn split(self) -> (Self::Left, Self::Right);
+
+    /// Unite left half and right half into `Self` again.
     fn unsplit(left: Self::Left, right: Self::Right) -> Result<Self, Self::Error>;
 }
 

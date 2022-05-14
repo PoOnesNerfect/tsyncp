@@ -1,3 +1,14 @@
+//! Contains [SenderBuilderFuture] which builds [broadcast::Sender](super::Sender),
+//! and [ReceiverBuilderFuture] which builds [broadcast::Receiver](super::Receiver).
+//!
+//! [SenderBuilderFuture] is returned by [sender_on](super::sender_on) function.
+//!
+//! [ReceiverBuilderFuture] is returned by [receiver_to](super::receiver_to) function.
+//!
+//! Before awaiting the future, you can chain other methods on it to configure Sender and Receiver.
+//!
+//! To see all available configurations, see [SenderBuilderFuture] and [ReceiverBuilderFuture].
+
 use super::{Receiver, Sender};
 use crate::util::{listener::WriteListener, Accept, Split};
 use crate::{channel, multi_channel};
@@ -36,6 +47,35 @@ pub(crate) fn new_sender<A: 'static + Send + Clone + ToSocketAddrs, T, E>(
     }
 }
 
+/// Future returned by [receiver_to(_)](crate::broadcast::receiver_to)
+/// to configure and build [Receiver](super::Receiver).
+///
+/// You can chain any number of configurations to the future:
+///
+/// ```no_run
+/// use tsyncp::broadcast;
+/// use serde::{Serialize, Deserialize};
+/// use std::time::Duration;
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy;
+///
+/// #[tokio::main]
+/// async fn main() -> color_eyre::Result<()> {
+///     let mut rx: broadcast::JsonReceiver<Dummy> = broadcast::receiver_to("localhost:8000")
+///         .retry(Duration::from_millis(500), 100)
+///         .set_tcp_linger(Some(Duration::from_millis(10_000)))
+///         .set_tcp_ttl(60_000)
+///         .set_tcp_nodelay(true)
+///         .set_tcp_reuseaddr(true)
+///         .set_tcp_reuseport(true)
+///         .set_tcp_send_buffer_size(8 * 1024 * 1024)
+///         .set_tcp_recv_buffer_size(8 * 1024 * 1024)
+///         .await?;
+///
+///     Ok(())
+/// }
+/// ```
 #[derive(Debug)]
 #[pin_project]
 pub struct ReceiverBuilderFuture<A, T, E, Filter, Fut, S = TcpStream> {
@@ -48,6 +88,28 @@ where
     A: 'static + Clone + Send + ToSocketAddrs,
     Filter: Clone + Fn(SocketAddr) -> bool,
 {
+    /// Retry connecting to remote Sender's address for `max_retries` with the interval
+    /// `retry_sleep_duration`.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    /// use std::time::Duration;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut rx: broadcast::JsonReceiver<Dummy> = broadcast::receiver_to("localhost:8000")
+    ///         .retry(Duration::from_millis(500), 100)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn retry(
         self,
         retry_sleep_duration: Duration,
@@ -64,6 +126,26 @@ where
         }
     }
 
+    /// Set tcp reuseaddr for the connection made on this receiver.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut rx: broadcast::JsonReceiver<Dummy> = broadcast::receiver_to("localhost:8000")
+    ///         .set_tcp_reuseaddr(true)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_reuseaddr(
         self,
         reuseaddr: bool,
@@ -79,6 +161,26 @@ where
         }
     }
 
+    /// Set tcp reuseport for the connection made on this receiver.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut rx: broadcast::JsonReceiver<Dummy> = broadcast::receiver_to("localhost:8000")
+    ///         .set_tcp_reuseport(true)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
     #[cfg_attr(
         docsrs,
@@ -99,6 +201,27 @@ where
         }
     }
 
+    /// Set tcp linger for the connection made on this receiver.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    /// use std::time::Duration;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut rx: broadcast::JsonReceiver<Dummy> = broadcast::receiver_to("localhost:8000")
+    ///         .set_tcp_linger(Some(Duration::from_millis(10_000)))
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_linger(
         self,
         dur: Option<Duration>,
@@ -114,6 +237,26 @@ where
         }
     }
 
+    /// Set tcp nodelay for the connection made on this receiver.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut rx: broadcast::JsonReceiver<Dummy> = broadcast::receiver_to("localhost:8000")
+    ///         .set_tcp_nodelay(true)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_nodelay(
         self,
         nodelay: bool,
@@ -129,6 +272,26 @@ where
         }
     }
 
+    /// Set tcp ttl for the connection made on this receiver.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut rx: broadcast::JsonReceiver<Dummy> = broadcast::receiver_to("localhost:8000")
+    ///         .set_tcp_ttl(60_000)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_ttl(
         self,
         ttl: u32,
@@ -144,6 +307,26 @@ where
         }
     }
 
+    /// Set tcp recv_buffer_size for the connection made on this receiver.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut rx: broadcast::JsonReceiver<Dummy> = broadcast::receiver_to("localhost:8000")
+    ///         .set_tcp_recv_buffer_size(8 * 1024 * 1024)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_recv_buffer_size(
         self,
         size: u32,
@@ -159,6 +342,26 @@ where
         }
     }
 
+    /// Set tcp send_buffer_size for the connection made on this receiver.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut rx: broadcast::JsonReceiver<Dummy> = broadcast::receiver_to("localhost:8000")
+    ///         .set_tcp_send_buffer_size(8 * 1024 * 1024)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_send_buffer_size(
         self,
         size: u32,
@@ -194,6 +397,41 @@ where
     }
 }
 
+/// Future returned by [sender_on(_)](super::sender_on) to configure and build [Sender](super::Sender).
+///
+/// Use [sender_on](super::sender_on) function to create the [SenderBuilderFuture].
+///
+/// You can chain any number of configurations to the future:
+///
+/// ```no_run
+/// use tsyncp::broadcast;
+/// use serde::{Serialize, Deserialize};
+/// use std::time::Duration;
+///
+/// #[derive(Debug, Serialize, Deserialize)]
+/// struct Dummy;
+///
+/// #[tokio::main]
+/// async fn main() -> color_eyre::Result<()> {
+///     let mut tx: broadcast::JsonSender<Dummy> = broadcast::sender_on("localhost:8000")
+///         .limit(20)              // limit the total number of possible connections to 20.
+///         .set_tcp_linger(Some(Duration::from_millis(10_000)))
+///         .set_tcp_ttl(60_000)
+///         .set_tcp_nodelay(true)
+///         .set_tcp_reuseaddr(true)
+///         .set_tcp_reuseport(true)
+///         .set_tcp_send_buffer_size(8 * 1024 * 1024)
+///         .set_tcp_recv_buffer_size(8 * 1024 * 1024)
+///         .accept()
+///         .to_limit()             // accept connections to limit before returning.
+///         .await?;
+///
+///     Ok(())
+/// }
+/// ```
+///
+/// However, there are some exclusive futures:
+/// - You can only use one of [SenderBuilderFuture::limit] and [SenderBuilderFuture::limit_const].
 #[derive(Debug)]
 #[pin_project]
 pub struct SenderBuilderFuture<A, T, E, Fut, const N: usize = 0, L = TcpListener>
@@ -227,7 +465,7 @@ where
     ///
     /// #[tokio::main]
     /// async fn main() -> color_eyre::Result<()> {
-    ///     let mut ch: broadcast::JsonSender<Dummy> = broadcast::sender_on("localhost:8000")
+    ///     let mut tx: broadcast::JsonSender<Dummy> = broadcast::sender_on("localhost:8000")
     ///         .accept()
     ///         .num(10)             // accept 10 connections before returning.
     ///         .await?;
@@ -256,6 +494,26 @@ where
     A: 'static + Send + Clone + ToSocketAddrs,
     Fut: Future<Output = multi_channel::builder::Result<multi_channel::Channel<T, E, N>>>,
 {
+    /// Limit the total number of connections this sender can have.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut tx: broadcast::JsonSender<Dummy> = broadcast::sender_on("localhost:8000")
+    ///         .limit(10)                              // limit the total number of possible connections to 10.
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn limit(
         self,
         limit: usize,
@@ -271,6 +529,37 @@ where
         }
     }
 
+    /// Limit the total number of connections this sender can have using const generic usize value.
+    ///
+    /// Use this method if you want to use an array instead of a vec for the [StreamPool](crate::util::stream_pool::StreamPool)
+    /// that handles all the connections.
+    /// Using an array on the stack may improve performance by reducing access time to the streams.
+    ///
+    /// For more information about using an array or vec, see [StreamPool](crate::util::stream_pool::StreamPool).
+    ///
+    /// If you use this method, you must specify this value as the second paramter in the type
+    /// specifier, as shown below.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut tx: broadcast::JsonSender<Dummy, 10> = broadcast::sender_on("localhost:8000")
+    ///         .limit_const::<10>()            // ^--- this value must be set. Can be `_`.
+    ///         .accept()
+    ///         .to_limit()                     // accept up to the limit (10).
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn limit_const<const M: usize>(
         self,
     ) -> SenderBuilderFuture<
@@ -285,6 +574,26 @@ where
         }
     }
 
+    /// Set tcp reuseaddr for all the connections made on this sender.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut tx: broadcast::JsonSender<Dummy> = broadcast::sender_on("localhost:8000")
+    ///         .set_tcp_reuseaddr(true)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_reuseaddr(
         self,
         reuseaddr: bool,
@@ -300,6 +609,28 @@ where
         }
     }
 
+    /// Set tcp reuseport for all the connections made on this sender.
+    ///
+    /// *Warning:* only available to unix targets excluding "solaris" and "illumos".
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut tx: broadcast::JsonSender<Dummy> = broadcast::sender_on("localhost:8000")
+    ///         .set_tcp_reuseport(true)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
     #[cfg_attr(
         docsrs,
@@ -320,6 +651,27 @@ where
         }
     }
 
+    /// Set tcp linger for all the connections made on this sender.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    /// use std::time::Duration;
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut tx: broadcast::JsonSender<Dummy> = broadcast::sender_on("localhost:8000")
+    ///         .set_tcp_linger(Some(Duration::from_millis(10_000)))
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_linger(
         self,
         dur: Option<Duration>,
@@ -335,6 +687,26 @@ where
         }
     }
 
+    /// Set tcp nodelay for all the connections made on this sender.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut tx: broadcast::JsonSender<Dummy> = broadcast::sender_on("localhost:8000")
+    ///         .set_tcp_nodelay(true)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_nodelay(
         self,
         nodelay: bool,
@@ -350,6 +722,26 @@ where
         }
     }
 
+    /// Set tcp ttl for all the connections made on this sender.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut tx: broadcast::JsonSender<Dummy> = broadcast::sender_on("localhost:8000")
+    ///         .set_tcp_ttl(60_000)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_ttl(
         self,
         ttl: u32,
@@ -365,6 +757,26 @@ where
         }
     }
 
+    /// Set tcp recv_buffer_size for all the connections made on this sender.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut ch: broadcast::JsonSender<Dummy> = broadcast::sender_on("localhost:8000")
+    ///         .set_tcp_recv_buffer_size(8 * 1024 * 1024)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_recv_buffer_size(
         self,
         size: u32,
@@ -380,6 +792,26 @@ where
         }
     }
 
+    /// Set tcp send_buffer_size for all the connections made on this sender.
+    ///
+    /// ### Example:
+    ///
+    /// ```no_run
+    /// use tsyncp::broadcast;
+    /// use serde::{Serialize, Deserialize};
+    ///
+    /// #[derive(Debug, Serialize, Deserialize)]
+    /// struct Dummy;
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> color_eyre::Result<()> {
+    ///     let mut tx: broadcast::JsonSender<Dummy> = broadcast::sender_on("localhost:8000")
+    ///         .set_tcp_send_buffer_size(8 * 1024 * 1024)
+    ///         .await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
     pub fn set_tcp_send_buffer_size(
         self,
         size: u32,

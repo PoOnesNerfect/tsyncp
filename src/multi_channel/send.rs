@@ -217,6 +217,8 @@ where
     /// whenever this future is polled. When this future completes, [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture)
     /// will also complete, whether or not it accepted any connections.
     ///
+    /// To see available chain methods, see [ChainedAcceptFuture](crate::multi_channel::accept::ChainedAcceptFuture).
+    ///
     /// ```no_run
     /// use color_eyre::Result;
     /// use serde::{Serialize, Deserialize};

@@ -372,7 +372,7 @@ where
     }
 }
 
-/// Contains listener errors.
+#[allow(missing_docs)]
 pub mod errors {
     use snafu::{Backtrace, Snafu};
 
@@ -380,9 +380,9 @@ pub mod errors {
     #[derive(Debug, Snafu)]
     #[snafu(visibility(pub(super)))]
     pub enum UnsplitError {
-        #[snafu(display("[UnsplitError] Failed try_unwrap on Arc reference of Listener"))]
+        #[snafu(display("[UnsplitError] Failed try_unwrap on Arc reference of Listener."))]
         TryUnwrap { backtrace: Backtrace },
-        #[snafu(display("[UnsplitError] Provided Arc pointers in unsplit are not the same"))]
+        #[snafu(display("[UnsplitError] Provided Arc pointers in unsplit are not the same."))]
         ArcPtrUnequal { backtrace: Backtrace },
     }
 }

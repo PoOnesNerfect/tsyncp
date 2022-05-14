@@ -34,8 +34,10 @@ use serde::{de::DeserializeOwned, Serialize};
 /// }
 /// ```
 pub trait EncodeMethod<T> {
+    /// Error returned by associated method `encode(_)`.
     type Error: 'static + snafu::Error;
 
+    /// Encode given data.
     fn encode(data: &T) -> Result<Bytes, Self::Error>;
 }
 
@@ -64,8 +66,10 @@ pub trait EncodeMethod<T> {
 /// }
 /// ```
 pub trait DecodeMethod<T> {
+    /// Error returned by associated method `decode(_)`.
     type Error: 'static + snafu::Error;
 
+    /// Decode given data.
     fn decode(bytes: BytesMut) -> Result<T, Self::Error>;
 }
 

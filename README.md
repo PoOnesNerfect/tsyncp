@@ -16,12 +16,11 @@ users can very easily implement their own [EncodeMethod] and [DecodeMethod].
 
 ## Provided APIs
 
-Currently, **tsyncp** provides 6 types of channels:
+Currently, **tsyncp** provides 5 types of channels:
 
 -   **mpsc**: Multi-producer/single-consumer channel.
 -   **broadcast**: Sigle-producer/multi-consumer channel.
 -   **barrier**: Ensures multiple waiters wait for the barrier to release.
--   **spsc**: Single-producer/single-consumer channel.
 -   **channel**: Generic single-connection channel for sending/receiving data.
     Can split into _Sender_ and _Receiver_ pair.
 -   **multi_channel**: Generic multi-connection channel for sending/receiving data.
@@ -29,7 +28,7 @@ Currently, **tsyncp** provides 6 types of channels:
 
 ## Example
 
-Goal of the project is to provide extremely simple, intuitive and extendable primitives to pass data over the network.
+Goal of the project is to provide simple, intuitive but extendable primitives to pass data over the network.
 That's why this library uses Future-chaining extensively.
 
 Getting started is as easy as:
@@ -45,7 +44,7 @@ rx.accept().await?;
 
 while let Some(Ok(dummy)) = rx.recv().await {
     println!("received {dummy:?}");
-    ...handle dummy
+    // ...handle dummy
 }
 ```
 
@@ -77,7 +76,7 @@ while let (Some(Ok(dummy_bytes, addr)), Ok(accepted_addrs)) = rx
         println!("accepted connection from {addr} while waiting to receive data");
     }
 
-    ...handle dummy
+    // ...handle dummy
 }
 ```
 
@@ -121,10 +120,14 @@ The [API documentation](https://docs.rs/tsyncp/) has a very detailed guide on ho
 
 ## Future Plans
 
-If enough people find this library useful or interesting, I will work primarily on the following features:
+If enough people find this library useful or interesting, I will work primarily on the following:
 
+-   **Unit testing**: This library currently lacks extensive unit testing, due to the author's limited time resources.
+-   **Benchmarking**: Currently, benchmarking was done locally and with simple messages.
+-   **CI/CD Flow**: Currently, I've only pushed manually to git and to crates.io.
 -   **Encrypted Streams**: _Tls_ and _Noise_. Technically, this library is already generic enough that it can have any type of bytestreams underneath.
     So, it should not be that rough implementing options for Tls and Noise streams! (fingers crossed...!)
+-   **More primitives**: Oneshot, pubsub, and client/server primitives?
 -   **Supporting other Encoding/Decoding implementations**: Right now, I'm thinking libraries like _rkyv_ and _speedy_;
     if anyone has any other options I can look into, please let me know!
 

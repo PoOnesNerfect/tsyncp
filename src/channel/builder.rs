@@ -1,6 +1,6 @@
 //! Contains [BuilderFuture] which builds [channel::Channel](super::Channel) when `.await`ed.
 //!
-//! [BuilderFuture] is returned by [channel_on](super::channel_on) or [channel_to](super::channel_to) function without awaiting it.
+//! [BuilderFuture] is returned by [channel_on](super::channel_on) or [channel_to](super::channel_to) function.
 //!
 //! Before awaiting the future, you can chain other methods on it to configure the Channel.
 //!
@@ -20,7 +20,7 @@ use std::time::Duration;
 use tokio::net::{TcpSocket, TcpStream};
 use tokio::task::JoinError;
 
-pub type Result<T, E = BuilderError> = std::result::Result<T, E>;
+pub(crate) type Result<T, E = BuilderError> = std::result::Result<T, E>;
 
 pub(crate) fn new<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     addr: A,
@@ -56,10 +56,8 @@ pub(crate) fn new<A: 'static + Clone + Send + ToSocketAddrs, T, E>(
     }
 }
 
-/// Future used to configure and build [Channel](super::Channel).
-///
-/// Use [channel_on](super::channel_on) or [channel_to](super::channel_to)
-/// function to create the [BuilderFuture].
+/// Future returned by [channel_on(_)](crate::channel::channel_on) and [channel_to(_)](crate::channel::channel_to)
+/// to configure and build [Channel](super::Channel).
 ///
 /// You can chain any number of configurations to the future:
 ///
@@ -591,6 +589,7 @@ fn get_socket(addr: &SocketAddr, tcp_settings: &TcpSettings) -> Result<TcpSocket
     Ok(socket)
 }
 
+#[allow(missing_docs)]
 pub mod errors {
     use super::*;
     use snafu::Snafu;

@@ -12,7 +12,7 @@ const LEN: usize = 10;
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
 
-    let sender_handles = (0..LEN)
+    let waiter_handles = (0..LEN)
         .map(|_| {
             tokio::spawn(async move {
                 let mut waiter: barrier::Waiter = barrier::waiter_to(ADDR)
@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
         })
         .collect::<Vec<_>>();
 
-    let receiver_handle = tokio::spawn(async move {
+    let barrier_handle = tokio::spawn(async move {
         let mut barrier: barrier::Barrier = barrier::barrier_on(ADDR)
             .limit(LEN)
             .accept()
@@ -47,11 +47,11 @@ async fn main() -> Result<()> {
         Ok::<_, color_eyre::Report>(())
     });
 
-    try_join_all(sender_handles)
+    try_join_all(waiter_handles)
         .await?
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
-    receiver_handle.await??;
+    barrier_handle.await??;
 
     Ok(())
 }

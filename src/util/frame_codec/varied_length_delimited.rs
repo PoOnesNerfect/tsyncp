@@ -278,6 +278,7 @@ impl Encoder<Bytes> for VariedLengthDelimitedCodec {
     }
 }
 
+#[allow(missing_docs)]
 pub mod errors {
     use snafu::{Backtrace, GenerateImplicitData, Snafu};
     use std::io;

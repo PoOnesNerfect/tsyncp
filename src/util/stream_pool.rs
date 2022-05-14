@@ -42,11 +42,6 @@ type Result<T, E = StreamPoolError> = std::result::Result<T, E>;
 /// error with *some* connections. So, it collects all the errors while sending data, and return
 /// them after data is flushed. When an error is encountered, the pool removes the errored stream
 /// from the pool, stores the error, then continues polling to the next stream.
-///
-/// The pool also allows sending data to specific streams. [StreamPool::get_indices] allows
-/// filtering addresses by a given closure and returning filter indices of the streams, and [StreamPool::poll_ready_indices],
-/// and [StreamPool::poll_flush_indices] use these indicies to poll the filter streams. [StreamPool::start_send_filter] takes a closure
-/// to filter streams and send to the specific streams.
 #[derive(Debug)]
 pub struct StreamPool<S, const N: usize = 0> {
     pool: Pool<S, N>,
@@ -476,7 +471,7 @@ impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
 }
 
 impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
-    pub fn get_indices<Filter>(&self, filter: &Filter) -> Vec<usize>
+    pub(crate) fn get_indices<Filter>(&self, filter: &Filter) -> Vec<usize>
     where
         Filter: Fn(SocketAddr) -> bool,
     {
@@ -488,7 +483,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
             .collect::<Vec<_>>()
     }
 
-    pub fn poll_ready_indices(
+    pub(crate) fn poll_ready_indices(
         &mut self,
         indices: &mut Vec<usize>,
         cx: &mut std::task::Context<'_>,
@@ -512,7 +507,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         Poll::Ready(())
     }
 
-    pub fn start_send_filter<Filter: Fn(SocketAddr) -> bool>(
+    pub(crate) fn start_send_filter<Filter: Fn(SocketAddr) -> bool>(
         &mut self,
         item: Bytes,
         filter: &Filter,
@@ -552,7 +547,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         }
     }
 
-    pub fn poll_flush_indices(
+    pub(crate) fn poll_flush_indices(
         &mut self,
         indices: &mut Vec<usize>,
         cx: &mut std::task::Context<'_>,
@@ -700,6 +695,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
     }
 }
 
+#[allow(missing_docs)]
 pub mod errors {
     use crate::util::frame_codec;
     use snafu::{Backtrace, GenerateImplicitData, Snafu};

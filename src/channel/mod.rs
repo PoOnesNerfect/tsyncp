@@ -352,12 +352,12 @@ pub struct Channel<T, E, S = TcpStream> {
 }
 
 impl<T, E, S> Channel<T, E, S> {
-    /// Returns local addr
+    /// Returns local address
     pub fn local_addr(&self) -> &SocketAddr {
         &self.local_addr
     }
 
-    /// Returns peer addr
+    /// Returns peer address
     pub fn peer_addr(&self) -> &SocketAddr {
         &self.peer_addr
     }
@@ -531,11 +531,14 @@ where
     S: AsyncRead + Unpin,
 {
     /// Returns [RecvFuture](recv::RecvFuture) which asynchronously receives an item.
+    ///
+    /// To extend this method by chaining futures, see [RecvFuture](recv::RecvFuture).
     pub fn recv(&mut self) -> recv::RecvFuture<'_, T, E, S> {
         recv::RecvFuture::new(self)
     }
 }
 
+#[allow(missing_docs)]
 pub mod errors {
     use super::*;
     use crate::util::frame_codec::errors::CodecError;

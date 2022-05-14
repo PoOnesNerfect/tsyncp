@@ -30,6 +30,8 @@ pub type Framed<T, U = crate::util::frame_codec::VariedLengthDelimitedCodec> =
 /// This struct is used as the associated type `Config` for the trait [Accept] by `TcpListener` .
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 pub struct TcpStreamSettings {
+    /// TCP setting `nodelay`.
     pub nodelay: Option<bool>,
+    /// TCP setting `ttl`.
     pub ttl: Option<u32>,
 }
