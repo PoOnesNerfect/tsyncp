@@ -18,7 +18,6 @@ async fn main() -> Result<()> {
 
     let mut channel: multi_channel::JsonChannel<Chat> = multi_channel::channel_on(ADDR)
         .accept()
-        .num(2)
         .handle(|a| println!("\n{a} joined the chatroom!\n"))
         .await?;
 
