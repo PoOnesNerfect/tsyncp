@@ -262,10 +262,6 @@ where
     /// }
     /// ```
     #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos"))))
-    )]
     pub fn set_tcp_reuseport(
         mut self,
         reuseport: bool,
@@ -753,10 +749,6 @@ where
     }
 
     #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos"))))
-    )]
     if let Some(reuseport) = tcp_settings.reuseport {
         socket.set_reuseport(reuseport).toss_set_reuse_port(addr)?;
     }
