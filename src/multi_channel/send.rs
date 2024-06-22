@@ -4,16 +4,12 @@
 //!
 //! For detailed examples, see each documentation in the structs below.
 
-use super::{
-    accept::ChainedAcceptFuture,
-    errors::{ItemEncodeSnafu, SinkError, SinkErrorsSnafu},
-    Channel,
-};
+use super::{accept::ChainedAcceptFuture, Channel};
+use super::{SinkError, TossSinkErrorItemEncode, TossSinkErrorSinkErrors};
 use crate::util::{codec::EncodeMethod, Accept};
 use futures::SinkExt;
 use futures::{ready, Future};
 use pin_project::pin_project;
-use snafu::ResultExt;
 use std::{net::SocketAddr, task::Poll};
 use tokio::io::AsyncWrite;
 
@@ -505,9 +501,7 @@ where
                         .take()
                         .expect("taking item should only be called once");
 
-                    let encoded = E::encode(&item).with_context(|_| ItemEncodeSnafu {
-                        addr: *this.channel.local_addr(),
-                    })?;
+                    let encoded = E::encode(&item).toss_item_encode(*this.channel.local_addr())?;
 
                     this.channel
                         .stream_pool
@@ -532,11 +526,10 @@ where
                     // return and dump all errors
                     if len == 0 {
                         return Poll::Ready(
-                            this.channel.stream_pool.drain_sink_res().with_context(|_| {
-                                SinkErrorsSnafu {
-                                    addr: *this.channel.local_addr(),
-                                }
-                            }),
+                            this.channel
+                                .stream_pool
+                                .drain_sink_res()
+                                .toss_sink_errors(*this.channel.local_addr()),
                         );
                     }
 
@@ -551,9 +544,7 @@ where
             this.channel
                 .stream_pool
                 .drain_sink_res()
-                .with_context(|_| SinkErrorsSnafu {
-                    addr: *this.channel.local_addr(),
-                }),
+                .toss_sink_errors(*this.channel.local_addr()),
         )
     }
 }

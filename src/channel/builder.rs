@@ -8,10 +8,8 @@
 
 use super::Channel;
 use crate::util::{frame_codec::VariedLengthDelimitedCodec, Framed};
-use errors::*;
 use futures::Future;
 use pin_project::pin_project;
-use snafu::{Backtrace, ResultExt};
 use std::io;
 use std::marker::PhantomData;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -475,29 +473,28 @@ async fn build_tcp_stream<
         ))
     })
     .await
-    .context(SpawnJoinSnafu)?
-    .context(ToSocketAddrsSnafu)?;
+    .toss_spawn_join()?
+    .toss_to_socket_addrs()?;
 
     let socket = get_socket(&addr, &tcp_settings)?;
 
     let (stream, local_addr, peer_addr) = if listening {
-        socket.bind(addr).context(BindingSnafu { addr })?;
+        socket.bind(addr).toss_binding(addr)?;
 
-        let listener = socket.listen(1024).context(ListeningSnafu { addr })?;
+        let listener = socket.listen(1024).toss_listening(addr)?;
 
-        let local_addr = listener.local_addr().context(LocalAddrSnafu { addr })?;
+        let local_addr = listener.local_addr().toss_local_addr(addr)?;
 
-        let (mut stream, mut peer_addr) =
-            listener.accept().await.context(AcceptingSnafu { addr })?;
+        let (mut stream, mut peer_addr) = listener.accept().await.toss_accepting(addr)?;
         while !filter(peer_addr) {
-            (stream, peer_addr) = listener.accept().await.context(AcceptingSnafu { addr })?;
+            (stream, peer_addr) = listener.accept().await.toss_accepting(addr)?;
         }
 
         (stream, local_addr, peer_addr)
     } else {
         let mut i = 0;
 
-        let mut res = socket.connect(addr).await.context(ConnectingSnafu { addr });
+        let mut res = socket.connect(addr).await.toss_connecting(addr);
 
         let stream = loop {
             match res {
@@ -511,7 +508,7 @@ async fn build_tcp_stream<
                         tokio::time::sleep(retry_sleep_duration).await;
 
                         let socket = get_socket(&addr, &tcp_settings)?;
-                        res = socket.connect(addr).await.context(ConnectingSnafu { addr });
+                        res = socket.connect(addr).await.toss_connecting(addr);
 
                         i += 1;
                     } else {
@@ -521,19 +518,17 @@ async fn build_tcp_stream<
             }
         };
 
-        let local_addr = stream.local_addr().context(LocalAddrSnafu { addr })?;
+        let local_addr = stream.local_addr().toss_local_addr(addr)?;
         let peer_addr = stream.peer_addr().expect("Should be able to get peer_addr");
         (stream, local_addr, peer_addr)
     };
 
     if let Some(nodelay) = tcp_settings.nodelay {
-        stream
-            .set_nodelay(nodelay)
-            .context(SetNodelaySnafu { addr })?;
+        stream.set_nodelay(nodelay).toss_set_nodelay(addr)?;
     }
 
     if let Some(ttl) = tcp_settings.ttl {
-        stream.set_ttl(ttl).context(SetTtlSnafu { addr })?;
+        stream.set_ttl(ttl).toss_set_ttl(addr)?;
     }
 
     Ok(Channel {
@@ -546,15 +541,13 @@ async fn build_tcp_stream<
 
 fn get_socket(addr: &SocketAddr, tcp_settings: &TcpSettings) -> Result<TcpSocket> {
     let socket = if addr.is_ipv4() {
-        TcpSocket::new_v4().context(NewSocketSnafu { addr: *addr })?
+        TcpSocket::new_v4().toss_new_socket(*addr)?
     } else {
-        TcpSocket::new_v6().context(NewSocketSnafu { addr: *addr })?
+        TcpSocket::new_v6().toss_new_socket(*addr)?
     };
 
     if let Some(reuseaddr) = tcp_settings.reuseaddr {
-        socket
-            .set_reuseaddr(reuseaddr)
-            .context(SetReuseAddrSnafu { addr: *addr })?;
+        socket.set_reuseaddr(reuseaddr).toss_set_reuse_addr(*addr)?;
     }
 
     #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
@@ -563,146 +556,122 @@ fn get_socket(addr: &SocketAddr, tcp_settings: &TcpSettings) -> Result<TcpSocket
         doc(cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos"))))
     )]
     if let Some(reuseport) = tcp_settings.reuseport {
-        socket
-            .set_reuseport(reuseport)
-            .context(SetReusePortSnafu { addr: *addr })?;
+        socket.set_reuseport(reuseport).toss_set_reuse_port(*addr)?;
     }
 
     if let Some(linger) = tcp_settings.linger {
-        socket
-            .set_linger(linger)
-            .context(SetLingerSnafu { addr: *addr })?;
+        socket.set_linger(linger).toss_set_linger(*addr)?;
     }
 
     if let Some(size) = tcp_settings.recv_buffer_size {
         socket
             .set_recv_buffer_size(size)
-            .context(SetRecvBufferSizeSnafu { addr: *addr })?;
+            .toss_set_recv_buffer_size(*addr)?;
     }
 
     if let Some(size) = tcp_settings.send_buffer_size {
         socket
             .set_send_buffer_size(size)
-            .context(SetSendBufferSizeSnafu { addr: *addr })?;
+            .toss_set_send_buffer_size(*addr)?;
     }
 
     Ok(socket)
 }
 
-#[allow(missing_docs)]
-pub mod errors {
-    use super::*;
-    use snafu::Snafu;
+use thiserror::Error;
+use tosserror::Toss;
 
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum BuilderError {
-        #[snafu(display("[BuilderError] Encountered unexpected error on spawned task for converting to socket addr"))]
-        SpawnJoin {
-            /// source Error
-            source: JoinError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[BuilderError] Failed to convert input to socket address"))]
-        ToSocketAddrs {
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[BuilderError] Failed to create Tcp Socket for {addr}"))]
-        NewSocketError {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[BuilderError] Failed to set reuseaddr for {addr}"))]
-        SetReuseAddr {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[BuilderError] Failed to set reuseport for {addr}"))]
-        SetReusePort {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[BuilderError] Failed to set linger for {addr}"))]
-        SetLinger {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[BuilderError] Failed to set recv_buffer_size for {addr}"))]
-        SetRecvBufferSize {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[BuilderError] Failed to set send_buffer_size for {addr}"))]
-        SetSendBufferSize {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[BuilderError] Failed to set nodelay for {addr}"))]
-        SetNodelay {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[BuilderError] Failed to set ttl for {addr}"))]
-        SetTtl {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[BuilderError] Failed to connect to {addr}"))]
-        Connecting {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        /// returned from invalid inner IO Error
-        #[snafu(display("[BuilderError] Failed to bind on {addr}"))]
-        Binding {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        /// returned from invalid inner IO Error
-        #[snafu(display("[BuilderError] Failed to listen on {addr}"))]
-        Listening {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        /// returned from invalid inner IO Error
-        #[snafu(display(
-            "[BuilderError] Encountered IO Error while accepting connections on {addr}"
-        ))]
-        Accepting {
-            addr: SocketAddr,
-            /// source IO Error
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[BuilderError] Failed to get local addr for listener on {addr}"))]
-        LocalAddr {
-            addr: SocketAddr,
-            source: io::Error,
-            backtrace: Backtrace,
-        },
-    }
+#[allow(missing_docs)]
+#[derive(Debug, Error, Toss)]
+#[visibility(pub(super))]
+pub enum BuilderError {
+    #[error(
+        "[BuilderError] Encountered unexpected error on spawned task for converting to socket addr"
+    )]
+    SpawnJoin {
+        /// source Error
+        source: JoinError,
+    },
+    #[error("[BuilderError] Failed to convert input to socket address")]
+    ToSocketAddrs {
+        /// source IO Error
+        source: io::Error,
+    },
+    #[error("[BuilderError] Failed to create Tcp Socket for {addr}")]
+    NewSocketError {
+        addr: SocketAddr,
+        /// source IO Error
+        source: io::Error,
+    },
+    #[error("[BuilderError] Failed to set reuseaddr for {addr}")]
+    SetReuseAddr {
+        addr: SocketAddr,
+        /// source IO Error
+        source: io::Error,
+    },
+    #[error("[BuilderError] Failed to set reuseport for {addr}")]
+    SetReusePort {
+        addr: SocketAddr,
+        /// source IO Error
+        source: io::Error,
+    },
+    #[error("[BuilderError] Failed to set linger for {addr}")]
+    SetLinger {
+        addr: SocketAddr,
+        /// source IO Error
+        source: io::Error,
+    },
+    #[error("[BuilderError] Failed to set recv_buffer_size for {addr}")]
+    SetRecvBufferSize {
+        addr: SocketAddr,
+        /// source IO Error
+        source: io::Error,
+    },
+    #[error("[BuilderError] Failed to set send_buffer_size for {addr}")]
+    SetSendBufferSize {
+        addr: SocketAddr,
+        /// source IO Error
+        source: io::Error,
+    },
+    #[error("[BuilderError] Failed to set nodelay for {addr}")]
+    SetNodelay {
+        addr: SocketAddr,
+        /// source IO Error
+        source: io::Error,
+    },
+    #[error("[BuilderError] Failed to set ttl for {addr}")]
+    SetTtl {
+        addr: SocketAddr,
+        /// source IO Error
+        source: io::Error,
+    },
+    #[error("[BuilderError] Failed to connect to {addr}")]
+    Connecting {
+        addr: SocketAddr,
+        /// source IO Error
+        source: io::Error,
+    },
+    /// returned from invalid inner IO Error
+    #[error("[BuilderError] Failed to bind on {addr}")]
+    Binding {
+        addr: SocketAddr,
+        /// source IO Error
+        source: io::Error,
+    },
+    /// returned from invalid inner IO Error
+    #[error("[BuilderError] Failed to listen on {addr}")]
+    Listening {
+        addr: SocketAddr,
+        /// source IO Error
+        source: io::Error,
+    },
+    /// returned from invalid inner IO Error
+    #[error("[BuilderError] Encountered IO Error while accepting connections on {addr}")]
+    Accepting {
+        addr: SocketAddr,
+        /// source IO Error
+        source: io::Error,
+    },
+    #[error("[BuilderError] Failed to get local addr for listener on {addr}")]
+    LocalAddr { addr: SocketAddr, source: io::Error },
 }

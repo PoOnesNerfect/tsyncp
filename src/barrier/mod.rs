@@ -111,7 +111,6 @@ use crate::{
     util::{codec::EmptyCodec, listener::WriteListener, tcp, Accept},
 };
 use futures::Future;
-use snafu::Backtrace;
 use std::net::{SocketAddr, ToSocketAddrs};
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -571,25 +570,22 @@ where
     }
 }
 
+use std::io;
+use thiserror::Error;
+use tosserror::Toss;
+
 #[allow(missing_docs)]
-pub mod errors {
-    use super::*;
-    use snafu::Snafu;
-    use std::io;
+#[derive(Debug, Error, Toss)]
+#[error("[BarrierError] Failed to release")]
+#[visibility(pub(super))]
+pub struct BarrierError {
+    source: multi_channel::SinkError<io::Error>,
+}
 
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[BarrierError] Failed to release"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct BarrierError {
-        source: multi_channel::errors::SinkError<io::Error>,
-        backtrace: Backtrace,
-    }
-
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[WaiterError] Failed to wait"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct WaiterError {
-        source: channel::errors::StreamError<io::Error>,
-        backtrace: Backtrace,
-    }
+#[allow(missing_docs)]
+#[derive(Debug, Error, Toss)]
+#[error("[WaiterError] Failed to wait")]
+#[visibility(pub(super))]
+pub struct WaiterError {
+    source: channel::StreamError<io::Error>,
 }

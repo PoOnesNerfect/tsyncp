@@ -14,7 +14,7 @@ pub trait Split: Sized {
     /// Right half of split item
     type Right;
     /// Error returned by associated method `unsplit(_, _)`.
-    type Error: 'static + snafu::Error;
+    type Error: 'static + std::error::Error;
 
     /// Split self into left and right halfs.
     fn split(self) -> (Self::Left, Self::Right);

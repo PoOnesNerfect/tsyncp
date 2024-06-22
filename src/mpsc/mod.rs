@@ -361,7 +361,7 @@ where
     S: AsyncWrite + Unpin,
 {
     /// Asynchronously send item to the peer addr
-    pub async fn send(&mut self, item: T) -> Result<(), channel::errors::SinkError<E::Error>> {
+    pub async fn send(&mut self, item: T) -> Result<(), channel::SinkError<E::Error>> {
         self.0.send(item).await
     }
 }

@@ -794,13 +794,13 @@
 //!
 //! ```ignore
 //! pub trait EncodeMethod<T> {
-//!     type Error: 'static + snafu::Error;
+//!     type Error: 'static + std::error::Error;
 //!
 //!     fn encode(data: &T) -> Result<Bytes, Self::Error>;
 //! }
 //!
 //! pub trait DecodeMethod<T> {
-//!     type Error: 'static + snafu::Error;
+//!     type Error: 'static + std::error::Error;
 //!
 //!     fn decode(bytes: BytesMut) -> Result<T, Self::Error>;
 //! }

@@ -5,15 +5,13 @@
 //! For detailed examples, see each documentation in the structs below.
 
 use super::{
-    accept::ChainedAcceptFuture,
-    errors::{ItemDecodeSnafu, StreamError, StreamSnafu},
-    Channel,
+    accept::ChainedAcceptFuture, Channel, StreamError, TossStreamErrorItemDecode,
+    TossStreamErrorStreamError,
 };
 use crate::util::{codec::DecodeMethod, Accept};
 use bytes::BytesMut;
 use futures::{ready, Future, StreamExt};
 use pin_project::pin_project;
-use snafu::ResultExt;
 use std::{net::SocketAddr, task::Poll};
 use tokio::io::AsyncRead;
 
@@ -378,13 +376,11 @@ where
     ) -> std::task::Poll<Self::Output> {
         let (frame, addr) = match ready!(self.channel.stream_pool.poll_next_unpin(cx)) {
             Some((Ok(frame), addr)) => (frame, addr),
-            Some((Err(error), addr)) => {
-                return Poll::Ready(Some(Err(error).context(StreamSnafu { addr })))
-            }
+            Some((Err(error), addr)) => return Poll::Ready(Some(Err(error).toss_stream(addr))),
             None => return Poll::Ready(None),
         };
 
-        let decoded = E::decode(frame).with_context(|_| ItemDecodeSnafu { addr });
+        let decoded = E::decode(frame).toss_item_decode(addr);
 
         Poll::Ready(Some(decoded.map(|d| (d, addr))))
     }
@@ -554,9 +550,7 @@ where
     ) -> std::task::Poll<Self::Output> {
         let frame = match ready!(self.channel.stream_pool.poll_next_unpin(cx)) {
             Some((Ok(frame), _)) => frame,
-            Some((Err(error), addr)) => {
-                return Poll::Ready(Some(Err(error).context(StreamSnafu { addr })))
-            }
+            Some((Err(error), addr)) => return Poll::Ready(Some(Err(error).toss_stream(addr))),
             None => return Poll::Ready(None),
         };
 
@@ -697,9 +691,7 @@ where
     ) -> std::task::Poll<Self::Output> {
         let (frame, addr) = match ready!(self.channel.stream_pool.poll_next_unpin(cx)) {
             Some((Ok(frame), addr)) => (frame, addr),
-            Some((Err(error), addr)) => {
-                return Poll::Ready(Some(Err(error).context(StreamSnafu { addr })))
-            }
+            Some((Err(error), addr)) => return Poll::Ready(Some(Err(error).toss_stream(addr))),
             None => return Poll::Ready(None),
         };
 

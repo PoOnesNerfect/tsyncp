@@ -4,14 +4,10 @@
 //! or [send(_).accepting()](crate::multi_channel::send::SendFuture::accepting),
 //! which concurrently accepts connections while receiving or sending.
 
-use super::{
-    errors::{AcceptError, StreamPoolAcceptSnafu},
-    Channel,
-};
+use super::{AcceptError, Channel, TossAcceptErrorStreamPoolAcceptError};
 use crate::util::Accept;
 use futures::{ready, Future, FutureExt};
 use pin_project::pin_project;
-use snafu::ResultExt;
 use std::{marker::PhantomData, net::SocketAddr, task::Poll};
 
 /// Future returned by [channel.accept(_)](crate::multi_channel::Channel::accept).
@@ -459,7 +455,7 @@ where
                         self.accepted += 1;
                     }
                 }
-                Err(err) => return Poll::Ready(Err(err).context(StreamPoolAcceptSnafu)),
+                Err(err) => return Poll::Ready(Err(err).toss_stream_pool_accept()),
             }
         }
 
@@ -880,7 +876,7 @@ where
                 .poll_accept(&channel_ref.stream_config, cx);
 
             if let Poll::Ready(res) = poll {
-                match res.context(StreamPoolAcceptSnafu) {
+                match res.toss_stream_pool_accept() {
                     Ok((s, a)) => {
                         if (self.filter)(a) {
                             self.fut

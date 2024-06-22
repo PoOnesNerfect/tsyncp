@@ -2,11 +2,9 @@
 
 use super::{frame_codec::VariedLengthDelimitedCodec, Framed, Split};
 use bytes::{Bytes, BytesMut};
-use errors::*;
 use futures::{ready, SinkExt, StreamExt};
 use futures::{sink::Sink, stream::Stream};
 use pin_project::pin_project;
-use snafu::{ensure, ResultExt};
 use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::task::Poll;
@@ -126,13 +124,19 @@ where
 
     fn unsplit(mut r_half: Self::Left, mut w_half: Self::Right) -> Result<Self, Self::Error> {
         let is_array = r_half.is_array();
-        ensure!(is_array == w_half.is_array(), RWUnequalSnafu);
+        if is_array != w_half.is_array() {
+            return Err(UnsplitError::RWUnequal);
+        }
 
         let len = r_half.len();
-        ensure!(len == w_half.len(), RWUnequalSnafu);
+        if len != w_half.len() {
+            return Err(UnsplitError::RWUnequal);
+        }
 
         let limit = r_half.limit();
-        ensure!(limit == w_half.limit(), RWUnequalSnafu);
+        if limit != w_half.limit() {
+            return Err(UnsplitError::RWUnequal);
+        }
 
         let mut rw = if is_array {
             Self::array()
@@ -148,7 +152,7 @@ where
         for _ in 0..len {
             let (r, addr) = r_half.pop().expect("element should exist for popping");
             if let Some(w) = wmap.remove(&addr) {
-                let unsplit = Framed::<S>::unsplit(r, w).context(UnsplitSnafu)?;
+                let unsplit = Framed::<S>::unsplit(r, w).toss_unsplit()?;
                 rw.push(unsplit, addr).expect("len should be sufficient");
             } else {
                 rmap.insert(addr, r);
@@ -156,7 +160,7 @@ where
 
             let (w, addr) = w_half.pop().expect("element should exist for popping");
             if let Some(r) = rmap.remove(&addr) {
-                let unsplit = Framed::<S>::unsplit(r, w).context(UnsplitSnafu)?;
+                let unsplit = Framed::<S>::unsplit(r, w).toss_unsplit()?;
                 rw.push(unsplit, addr).expect("len should be sufficient");
             } else {
                 wmap.insert(addr, w);
@@ -301,7 +305,7 @@ impl<S, const N: usize> StreamPool<S, N> {
         match &mut self.pool {
             Pool::Array { streams, len, .. } => {
                 if *len == N {
-                    return AddStreamLimitReachedSnafu { limit: N }.fail();
+                    return Err(StreamPoolError::AddStreamLimitReached { limit: N });
                 }
 
                 streams[*len].write((stream, addr));
@@ -310,7 +314,7 @@ impl<S, const N: usize> StreamPool<S, N> {
             Pool::Vec { streams, limit, .. } => {
                 if let Some(limit) = limit {
                     if streams.len() == *limit {
-                        return AddStreamLimitReachedSnafu { limit: *limit }.fail();
+                        return Err(StreamPoolError::AddStreamLimitReached { limit: N });
                     }
                 }
 
@@ -399,7 +403,7 @@ impl<S, const N: usize> StreamPool<S, N> {
 
         // have first error as source
         if !errors.is_empty() {
-            return Err(SinkErrors::new(errors));
+            Err(SinkErrors::new(errors))
         } else {
             Ok(())
         }
@@ -456,7 +460,7 @@ impl<S: AsyncRead + Unpin, const N: usize> Stream for StreamPool<S, N> {
                         self.index = (index + 1) % len;
                     }
 
-                    return Poll::Ready(Some((item.context(PollNextSnafu { addr }), addr)));
+                    return Poll::Ready(Some((item.toss_poll_next(addr), addr)));
                 }
                 _ => {}
             }
@@ -493,9 +497,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         // we can swap_remove it and... just flush it away.
         while let Some(i) = indices.last() {
             let (stream, addr) = self.get_mut(*i).expect("Element should exist with index");
-            if let Err(e) =
-                ready!(stream.poll_ready_unpin(cx)).context(PollReadySnafu { addr: *addr })
-            {
+            if let Err(e) = ready!(stream.poll_ready_unpin(cx)).toss_poll_ready(*addr) {
                 self.swap_remove(*i);
                 self.sink_errors.push(e);
             }
@@ -535,10 +537,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
 
             // Gotta go fast!
             // Errors never bothered me anyway.
-            if let Err(e) = stream
-                .start_send_unpin(item.clone())
-                .context(StartSendSnafu { addr: *addr })
-            {
+            if let Err(e) = stream.start_send_unpin(item.clone()).toss_start_send(*addr) {
                 self.swap_remove(i);
                 self.sink_errors.push(e);
 
@@ -557,9 +556,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> StreamPool<S, N> {
         // we can swap_remove it and... just flush it away.
         while let Some(i) = indices.last() {
             let (stream, addr) = self.get_mut(*i).expect("Element should exist with index");
-            if let Err(e) =
-                ready!(stream.poll_flush_unpin(cx)).context(PollFlushSnafu { addr: *addr })
-            {
+            if let Err(e) = ready!(stream.poll_flush_unpin(cx)).toss_poll_flush(*addr) {
                 self.swap_remove(*i);
                 self.sink_errors.push(e);
             }
@@ -644,9 +641,7 @@ impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
                 .get_mut(n)
                 .expect("stream should be initialized from 0..len");
 
-            stream
-                .start_send_unpin(t)
-                .context(StartSendSnafu { addr: *addr })
+            stream.start_send_unpin(t).toss_start_send(*addr)
         };
 
         for i in (0..len).rev() {
@@ -695,224 +690,224 @@ impl<S: AsyncWrite + Unpin, const N: usize> Sink<Bytes> for StreamPool<S, N> {
     }
 }
 
+use crate::util::frame_codec;
+use std::{
+    error::Error,
+    fmt, io,
+    ops::{Deref, DerefMut},
+};
+use thiserror::Error;
+use tosserror::Toss;
+
 #[allow(missing_docs)]
-pub mod errors {
-    use crate::util::frame_codec;
-    use snafu::{Backtrace, GenerateImplicitData, Snafu};
-    use std::{
-        error::Error,
-        fmt, io,
-        net::SocketAddr,
-        ops::{Deref, DerefMut},
-    };
+#[derive(Debug, Error, Toss)]
+#[visibility(pub(super))]
+pub enum StreamPoolError {
+    #[error("[StreamPoolError] Cannot add stream to pool as limit {limit} is already reached.")]
+    AddStreamLimitReached { limit: usize },
+}
 
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum StreamPoolError {
-        #[snafu(display(
-            "[StreamPoolError] Cannot add stream to pool as limit {limit} is already reached."
-        ))]
-        AddStreamLimitReached { limit: usize, backtrace: Backtrace },
+#[allow(missing_docs)]
+#[derive(Debug, Error, Toss)]
+#[error("[SinkErrors] Encountered following errors while sending item:")]
+#[visibility(pub(super))]
+pub struct SinkErrors {
+    source: SinkErrorsInner,
+}
+
+#[allow(missing_docs)]
+#[derive(Debug)]
+pub struct SinkErrorsInner {
+    errors: Vec<PollError>,
+}
+
+impl Deref for SinkErrorsInner {
+    type Target = Vec<PollError>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.errors
     }
+}
 
-    #[derive(Debug, Snafu)]
-    #[snafu(display("[SinkErrors] Encountered following errors while sending item:"))]
-    #[snafu(visibility(pub(super)))]
-    pub struct SinkErrors {
-        source: SinkErrorsInner,
-        backtrace: Backtrace,
+impl DerefMut for SinkErrorsInner {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.errors
     }
+}
 
-    #[derive(Debug)]
-    pub struct SinkErrorsInner {
-        errors: Vec<PollError>,
-    }
+impl std::error::Error for SinkErrorsInner {}
 
-    impl Deref for SinkErrorsInner {
-        type Target = Vec<PollError>;
+impl fmt::Display for SinkErrorsInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for err in &self.errors {
+            write!(f, "\n- {}\n\n", err)?;
+            write!(f, "  Caused by:\n")?;
 
-        fn deref(&self) -> &Self::Target {
-            &self.errors
-        }
-    }
+            if let Some(source) = err.source() {
+                let mut i = 0;
+                let mut error = Some(source);
 
-    impl DerefMut for SinkErrorsInner {
-        fn deref_mut(&mut self) -> &mut Self::Target {
-            &mut self.errors
-        }
-    }
+                while let Some(e) = error {
+                    write!(f, "     {}: {}\n", i, e)?;
 
-    impl std::error::Error for SinkErrorsInner {}
-
-    impl fmt::Display for SinkErrorsInner {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            for err in &self.errors {
-                write!(f, "\n- {}\n\n", err)?;
-                write!(f, "  Caused by:\n")?;
-
-                if let Some(source) = err.source() {
-                    let mut i = 0;
-                    let mut error = Some(source);
-
-                    while let Some(e) = error {
-                        write!(f, "     {}: {}\n", i, e)?;
-
-                        i += 1;
-                        error = e.source();
-                    }
+                    i += 1;
+                    error = e.source();
                 }
             }
+        }
 
-            Ok(())
+        Ok(())
+    }
+}
+
+#[allow(missing_docs)]
+impl SinkErrors {
+    pub fn new(errors: Vec<PollError>) -> Self {
+        Self {
+            source: SinkErrorsInner { errors },
         }
     }
 
-    impl SinkErrors {
-        pub fn new(errors: Vec<PollError>) -> Self {
-            Self {
-                source: SinkErrorsInner { errors },
-                backtrace: Backtrace::generate(),
-            }
-        }
+    pub fn peer_addrs(&self) -> Vec<SocketAddr> {
+        self.iter().map(|e| e.peer_addr().to_owned()).collect()
+    }
 
-        pub fn peer_addrs(&self) -> Vec<SocketAddr> {
-            self.iter().map(|e| e.peer_addr().to_owned()).collect()
-        }
+    pub fn iter(&self) -> impl Iterator<Item = &PollError> {
+        self.source.errors.iter()
+    }
 
-        pub fn iter(&self) -> impl Iterator<Item = &PollError> {
-            self.source.errors.iter()
-        }
+    pub fn into_iter(self) -> impl Iterator<Item = PollError> {
+        self.source.errors.into_iter()
+    }
 
-        pub fn into_iter(self) -> impl Iterator<Item = PollError> {
-            self.source.errors.into_iter()
-        }
+    pub fn as_io_errors(&self) -> impl Iterator<Item = &std::io::Error> {
+        self.iter().filter_map(|e| e.as_io())
+    }
 
-        pub fn as_io_errors(&self) -> impl Iterator<Item = &std::io::Error> {
-            self.iter().filter_map(|e| e.as_io())
-        }
+    pub fn into_io_errors(self) -> impl Iterator<Item = std::io::Error> {
+        self.into_iter().filter_map(|e| e.into_io())
+    }
+}
 
-        pub fn into_io_errors(self) -> impl Iterator<Item = std::io::Error> {
-            self.into_iter().filter_map(|e| e.into_io())
+#[allow(missing_docs)]
+#[derive(Debug, Error, Toss)]
+#[visibility(pub(super))]
+pub enum UnsplitError<E>
+where
+    E: 'static + std::error::Error,
+{
+    #[error("[UnsplitError] Failed to unsplit underlying stream; read half and write half were not equal")]
+    RWUnequal,
+    #[error("[UnsplitError] Failed to unsplit underlying stream")]
+    Unsplit { source: E },
+}
+
+#[allow(missing_docs)]
+#[derive(Debug, Error, Toss)]
+#[visibility(pub(super))]
+pub enum PollError {
+    #[error("[PollError] Error start sending to {addr}")]
+    StartSend {
+        addr: SocketAddr,
+        source: frame_codec::CodecError,
+    },
+    #[error("[PollError] Error polling ready for {addr}")]
+    PollReady {
+        addr: SocketAddr,
+        source: frame_codec::CodecError,
+    },
+    #[error("[PollError] Error flushing buffer to {addr}")]
+    PollFlush {
+        addr: SocketAddr,
+        source: frame_codec::CodecError,
+    },
+    #[error("[PollError] Error closing connection to {addr}")]
+    PollClose {
+        addr: SocketAddr,
+        source: frame_codec::CodecError,
+    },
+    #[error("[StreamPoolError] Failed poll_next in stream_pool")]
+    PollNext {
+        addr: SocketAddr,
+        source: frame_codec::CodecError,
+    },
+}
+
+#[allow(missing_docs)]
+impl PollError {
+    pub fn peer_addr(&self) -> &SocketAddr {
+        match self {
+            Self::StartSend { addr, .. } => addr,
+            Self::PollReady { addr, .. } => addr,
+            Self::PollFlush { addr, .. } => addr,
+            Self::PollClose { addr, .. } => addr,
+            Self::PollNext { addr, .. } => addr,
         }
     }
 
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum UnsplitError<E>
-    where
-        E: 'static + snafu::Error,
-    {
-        #[snafu(display("[UnsplitError] Failed to unsplit underlying stream; read half and write half were not equal"))]
-        RWUnequal { backtrace: Backtrace },
-        #[snafu(display("[UnsplitError] Failed to unsplit underlying stream"))]
-        Unsplit { source: E, backtrace: Backtrace },
+    pub fn as_io(&self) -> Option<&std::io::Error> {
+        match self {
+            Self::StartSend { source, .. } => source.as_io(),
+            Self::PollReady { source, .. } => source.as_io(),
+            Self::PollFlush { source, .. } => source.as_io(),
+            Self::PollClose { source, .. } => source.as_io(),
+            Self::PollNext { source, .. } => source.as_io(),
+        }
     }
 
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum PollError {
-        #[snafu(display("[PollError] Error start sending to {addr}"))]
-        StartSend {
-            addr: SocketAddr,
-            source: frame_codec::errors::CodecError,
-        },
-        #[snafu(display("[PollError] Error polling ready for {addr}"))]
-        PollReady {
-            addr: SocketAddr,
-            source: frame_codec::errors::CodecError,
-        },
-        #[snafu(display("[PollError] Error flushing buffer to {addr}"))]
-        PollFlush {
-            addr: SocketAddr,
-            source: frame_codec::errors::CodecError,
-        },
-        #[snafu(display("[PollError] Error closing connection to {addr}"))]
-        PollClose {
-            addr: SocketAddr,
-            source: frame_codec::errors::CodecError,
-        },
-        #[snafu(display("[StreamPoolError] Failed poll_next in stream_pool"))]
-        PollNext {
-            addr: SocketAddr,
-            source: frame_codec::errors::CodecError,
-        },
+    pub fn into_io(self) -> Option<std::io::Error> {
+        match self {
+            Self::StartSend { source, .. } => source.into_io(),
+            Self::PollReady { source, .. } => source.into_io(),
+            Self::PollFlush { source, .. } => source.into_io(),
+            Self::PollClose { source, .. } => source.into_io(),
+            Self::PollNext { source, .. } => source.into_io(),
+        }
     }
 
-    impl PollError {
-        pub fn peer_addr(&self) -> &SocketAddr {
-            match self {
-                Self::StartSend { addr, .. } => addr,
-                Self::PollReady { addr, .. } => addr,
-                Self::PollFlush { addr, .. } => addr,
-                Self::PollClose { addr, .. } => addr,
-                Self::PollNext { addr, .. } => addr,
-            }
-        }
+    /// Check if the error is a connection error.
+    ///
+    /// Returns `true` if the error either `reset`, `refused`, `aborted`, `not connected`, or
+    /// `broken pipe`.
+    ///
+    /// This is useful to see if the returned error is from the underlying TCP connection.
+    /// This method will be bubbled up with the error, and also be available at the highest
+    /// level.
+    pub fn is_connection_error(&self) -> bool {
+        self.is_connection_reset()
+            || self.is_connection_refused()
+            || self.is_connection_aborted()
+            || self.is_not_connected()
+            || self.is_broken_pipe()
+    }
 
-        pub fn as_io(&self) -> Option<&std::io::Error> {
-            match self {
-                Self::StartSend { source, .. } => source.as_io(),
-                Self::PollReady { source, .. } => source.as_io(),
-                Self::PollFlush { source, .. } => source.as_io(),
-                Self::PollClose { source, .. } => source.as_io(),
-                Self::PollNext { source, .. } => source.as_io(),
-            }
-        }
+    pub fn is_connection_reset(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == io::ErrorKind::ConnectionReset)
+            .unwrap_or_default()
+    }
 
-        pub fn into_io(self) -> Option<std::io::Error> {
-            match self {
-                Self::StartSend { source, .. } => source.into_io(),
-                Self::PollReady { source, .. } => source.into_io(),
-                Self::PollFlush { source, .. } => source.into_io(),
-                Self::PollClose { source, .. } => source.into_io(),
-                Self::PollNext { source, .. } => source.into_io(),
-            }
-        }
+    pub fn is_connection_refused(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == io::ErrorKind::ConnectionRefused)
+            .unwrap_or_default()
+    }
 
-        /// Check if the error is a connection error.
-        ///
-        /// Returns `true` if the error either `reset`, `refused`, `aborted`, `not connected`, or
-        /// `broken pipe`.
-        ///
-        /// This is useful to see if the returned error is from the underlying TCP connection.
-        /// This method will be bubbled up with the error, and also be available at the highest
-        /// level.
-        pub fn is_connection_error(&self) -> bool {
-            self.is_connection_reset()
-                || self.is_connection_refused()
-                || self.is_connection_aborted()
-                || self.is_not_connected()
-                || self.is_broken_pipe()
-        }
+    pub fn is_connection_aborted(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == io::ErrorKind::ConnectionAborted)
+            .unwrap_or_default()
+    }
 
-        pub fn is_connection_reset(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == io::ErrorKind::ConnectionReset)
-                .unwrap_or_default()
-        }
+    pub fn is_not_connected(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == io::ErrorKind::NotConnected)
+            .unwrap_or_default()
+    }
 
-        pub fn is_connection_refused(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == io::ErrorKind::ConnectionRefused)
-                .unwrap_or_default()
-        }
-
-        pub fn is_connection_aborted(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == io::ErrorKind::ConnectionAborted)
-                .unwrap_or_default()
-        }
-
-        pub fn is_not_connected(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == io::ErrorKind::NotConnected)
-                .unwrap_or_default()
-        }
-
-        pub fn is_broken_pipe(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == io::ErrorKind::BrokenPipe)
-                .unwrap_or_default()
-        }
+    pub fn is_broken_pipe(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == io::ErrorKind::BrokenPipe)
+            .unwrap_or_default()
     }
 }

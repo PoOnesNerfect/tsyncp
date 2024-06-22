@@ -15,7 +15,7 @@ pub trait Accept {
     /// For `TcpListener`, config is [TcpStreamSettings](crate::util::TcpStreamSettings), and sets `nodelay` and `ttl`.
     type Config: fmt::Debug + PartialEq + Clone;
     /// Error returned while accepting.
-    type Error: 'static + snafu::Error;
+    type Error: 'static + std::error::Error;
 
     /// Try polling to see if there is a new incoming connection.
     ///

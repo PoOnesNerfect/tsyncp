@@ -4,15 +4,11 @@
 //!
 //! For detailed examples, see each documentation in the structs below.
 
-use super::{
-    errors::{ItemDecodeSnafu, PollNextSnafu, StreamError},
-    Channel,
-};
+use super::{builder::*, Channel, StreamError, TossStreamErrorItemDecode, TossStreamErrorPollNext};
 use crate::util::codec::DecodeMethod;
 use bytes::BytesMut;
 use futures::{ready, Future, StreamExt};
 use pin_project::pin_project;
-use snafu::ResultExt;
 use std::task::Poll;
 use tokio::io::AsyncRead;
 
@@ -111,18 +107,15 @@ where
         let frame = match ready!(self.channel.framed.poll_next_unpin(cx)) {
             Some(Ok(frame)) => frame,
             Some(Err(error)) => {
-                return Poll::Ready(Some(Err(error).with_context(|_| PollNextSnafu {
-                    addr: *self.channel.local_addr(),
-                    peer_addr: *self.channel.peer_addr(),
+                return Poll::Ready(Some(Err(error).toss_poll_next_with(|| {
+                    (*self.channel.local_addr(), *self.channel.peer_addr())
                 })))
             }
             None => return Poll::Ready(None),
         };
 
-        let decoded = E::decode(frame).with_context(|_| ItemDecodeSnafu {
-            addr: *self.channel.local_addr(),
-            peer_addr: *self.channel.peer_addr(),
-        });
+        let decoded = E::decode(frame)
+            .toss_item_decode_with(|| (*self.channel.local_addr(), *self.channel.peer_addr()));
 
         Poll::Ready(Some(decoded))
     }
@@ -192,9 +185,8 @@ where
         let frame = match ready!(self.channel.framed.poll_next_unpin(cx)) {
             Some(Ok(frame)) => frame,
             Some(Err(error)) => {
-                return Poll::Ready(Some(Err(error).with_context(|_| PollNextSnafu {
-                    addr: *self.channel.local_addr(),
-                    peer_addr: *self.channel.peer_addr(),
+                return Poll::Ready(Some(Err(error).toss_poll_next_with(|| {
+                    (*self.channel.local_addr(), *self.channel.peer_addr())
                 })))
             }
             None => return Poll::Ready(None),

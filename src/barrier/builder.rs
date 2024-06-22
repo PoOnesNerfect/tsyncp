@@ -346,7 +346,7 @@ where
     Fut: Future<Output = channel::builder::Result<channel::Channel<(), EmptyCodec, S>>>,
     S: Split,
 {
-    type Output = Result<Waiter<S::Left>, channel::builder::errors::BuilderError>;
+    type Output = Result<Waiter<S::Left>, channel::builder::BuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
@@ -751,8 +751,7 @@ where
     <L::Output as Split>::Left: fmt::Debug,
     <L::Output as Split>::Right: fmt::Debug,
 {
-    type Output =
-        Result<Barrier<N, WriteListener<L>>, multi_channel::builder::errors::BuilderError>;
+    type Output = Result<Barrier<N, WriteListener<L>>, multi_channel::builder::BuilderError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
         let this = self.project();

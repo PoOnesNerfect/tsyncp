@@ -26,7 +26,6 @@
 //! `Sender` taking `WriteListener` as its listener.
 
 use super::{Accept, Split};
-use errors::*;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
 use std::fmt;
@@ -161,9 +160,9 @@ where
                 }
 
                 // return the read half of the stream.
-                return Poll::Ready(Ok((r, a)));
+                Poll::Ready(Ok((r, a)))
             }
-            Err(error) => return Poll::Ready(Err(error)),
+            Err(error) => Poll::Ready(Err(error)),
         }
     }
 
@@ -225,9 +224,9 @@ where
                 }
 
                 // return the write half of the stream.
-                return Poll::Ready(Ok((w, a)));
+                Poll::Ready(Ok((w, a)))
             }
-            Err(error) => return Poll::Ready(Err(error)),
+            Err(error) => Poll::Ready(Err(error)),
         }
     }
 
@@ -364,25 +363,24 @@ where
             if let Ok(listener) = Arc::try_unwrap(left.listener) {
                 Ok(listener)
             } else {
-                TryUnwrapSnafu.fail()
+                Err(UnsplitError::TryUnwrap)
             }
         } else {
-            ArcPtrUnequalSnafu.fail()
+            Err(UnsplitError::ArcPtrUnequal)
         }
     }
 }
 
-#[allow(missing_docs)]
-pub mod errors {
-    use snafu::{Backtrace, Snafu};
+use thiserror::Error;
+use tosserror::Toss;
 
-    /// Error returned while unsplitting `ReadListener` and `WriteListener`.
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum UnsplitError {
-        #[snafu(display("[UnsplitError] Failed try_unwrap on Arc reference of Listener."))]
-        TryUnwrap { backtrace: Backtrace },
-        #[snafu(display("[UnsplitError] Provided Arc pointers in unsplit are not the same."))]
-        ArcPtrUnequal { backtrace: Backtrace },
-    }
+#[allow(missing_docs)]
+/// Error returned while unsplitting `ReadListener` and `WriteListener`.
+#[derive(Debug, Error, Toss)]
+#[visibility(pub(super))]
+pub enum UnsplitError {
+    #[error("[UnsplitError] Failed try_unwrap on Arc reference of Listener.")]
+    TryUnwrap,
+    #[error("[UnsplitError] Provided Arc pointers in unsplit are not the same.")]
+    ArcPtrUnequal,
 }

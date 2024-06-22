@@ -93,9 +93,7 @@
 use crate::util::codec::{DecodeMethod, EncodeMethod};
 use crate::util::{Framed, Split};
 use crate::{broadcast, mpsc};
-use errors::*;
 use futures::{ready, Future, Sink, SinkExt};
-use snafu::{ensure, Backtrace, ResultExt};
 use std::marker::PhantomData;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::task::Poll;
@@ -429,23 +427,21 @@ where
             ..
         } = right.into();
 
-        ensure!(
-            l_local_addr == r_local_addr,
-            UnequalLocalAddrSnafu {
+        if l_local_addr != r_local_addr {
+            return Err(UnsplitError::UnequalLocalAddr {
                 l_local_addr,
-                r_local_addr
-            }
-        );
+                r_local_addr,
+            });
+        }
 
-        ensure!(
-            l_peer_addr == r_peer_addr,
-            UnequalPeerAddrSnafu {
+        if l_peer_addr != r_peer_addr {
+            return Err(UnsplitError::UnequalPeerAddr {
                 l_peer_addr,
-                r_peer_addr
-            }
-        );
+                r_peer_addr,
+            });
+        }
 
-        let framed = <_>::unsplit(l_framed, r_framed).context(FramedUnsplitSnafu)?;
+        let framed = <_>::unsplit(l_framed, r_framed).toss_framed_unsplit()?;
 
         Ok(Channel {
             framed,
@@ -474,17 +470,12 @@ where
     type Error = SinkError<E::Error>;
 
     fn start_send(mut self: std::pin::Pin<&mut Self>, item: T) -> Result<(), Self::Error> {
-        let encoded = E::encode(&item).context(ItemEncodeSnafu {
-            addr: self.local_addr,
-            peer_addr: self.peer_addr,
-        })?;
+        let encoded =
+            E::encode(&item).toss_item_encode_with(|| (self.local_addr, self.peer_addr))?;
 
         self.framed
             .start_send_unpin(encoded)
-            .context(StartSendSnafu {
-                addr: self.local_addr,
-                peer_addr: self.peer_addr,
-            })?;
+            .toss_start_send_with(|| (self.local_addr, self.peer_addr))?;
 
         Ok(())
     }
@@ -493,10 +484,8 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        let res = ready!(self.framed.poll_ready_unpin(cx)).context(PollReadySnafu {
-            addr: self.local_addr,
-            peer_addr: self.peer_addr,
-        });
+        let res = ready!(self.framed.poll_ready_unpin(cx))
+            .toss_poll_ready_with(|| (self.local_addr, self.peer_addr));
 
         Poll::Ready(res)
     }
@@ -505,10 +494,8 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        let res = ready!(self.framed.poll_flush_unpin(cx)).context(PollFlushSnafu {
-            addr: self.local_addr,
-            peer_addr: self.peer_addr,
-        });
+        let res = ready!(self.framed.poll_flush_unpin(cx))
+            .toss_poll_flush_with(|| (self.local_addr, self.peer_addr));
 
         Poll::Ready(res)
     }
@@ -517,10 +504,8 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), Self::Error>> {
-        let res = ready!(self.framed.poll_close_unpin(cx)).context(PollCloseSnafu {
-            addr: self.local_addr,
-            peer_addr: self.peer_addr,
-        });
+        let res = ready!(self.framed.poll_close_unpin(cx))
+            .toss_poll_close_with(|| (self.local_addr, self.peer_addr));
 
         Poll::Ready(res)
     }
@@ -538,261 +523,256 @@ where
     }
 }
 
+use crate::util::frame_codec::CodecError;
+use std::io::ErrorKind;
+use thiserror::Error;
+use tosserror::Toss;
+
 #[allow(missing_docs)]
-pub mod errors {
-    use super::*;
-    use crate::util::frame_codec::errors::CodecError;
-    use snafu::Snafu;
-    use std::io::ErrorKind;
+#[derive(Debug, Error, Toss)]
+#[visibility(pub(super))]
+pub enum SinkError<E>
+where
+    E: 'static + std::error::Error,
+{
+    #[error("[SinkError] Failed to encode item on {addr} to {peer_addr}")]
+    ItemEncode {
+        addr: SocketAddr,
+        peer_addr: SocketAddr,
+        source: E,
+    },
+    #[error("[SinkError] Failed start_send on {addr} to {peer_addr}")]
+    StartSend {
+        addr: SocketAddr,
+        peer_addr: SocketAddr,
+        source: CodecError,
+    },
+    #[error("[SinkError] Failed poll_ready on {addr} to {peer_addr}")]
+    PollReady {
+        addr: SocketAddr,
+        peer_addr: SocketAddr,
+        source: CodecError,
+    },
+    #[error("[SinkError] Failed poll_flush on {addr} to {peer_addr}")]
+    PollFlush {
+        addr: SocketAddr,
+        peer_addr: SocketAddr,
+        source: CodecError,
+    },
+    #[error("[SinkError] Failed poll_close on {addr} to {peer_addr}")]
+    PollClose {
+        addr: SocketAddr,
+        peer_addr: SocketAddr,
+        source: CodecError,
+    },
+}
 
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum SinkError<E>
-    where
-        E: 'static + snafu::Error,
-    {
-        #[snafu(display("[SinkError] Failed to encode item on {addr} to {peer_addr}"))]
-        ItemEncode {
-            addr: SocketAddr,
-            peer_addr: SocketAddr,
-            source: E,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[SinkError] Failed start_send on {addr} to {peer_addr}"))]
-        StartSend {
-            addr: SocketAddr,
-            peer_addr: SocketAddr,
-            source: CodecError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[SinkError] Failed poll_ready on {addr} to {peer_addr}"))]
-        PollReady {
-            addr: SocketAddr,
-            peer_addr: SocketAddr,
-            source: CodecError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[SinkError] Failed poll_flush on {addr} to {peer_addr}"))]
-        PollFlush {
-            addr: SocketAddr,
-            peer_addr: SocketAddr,
-            source: CodecError,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[SinkError] Failed poll_close on {addr} to {peer_addr}"))]
-        PollClose {
-            addr: SocketAddr,
-            peer_addr: SocketAddr,
-            source: CodecError,
-            backtrace: Backtrace,
-        },
-    }
-
-    impl<E> SinkError<E>
-    where
-        E: 'static + snafu::Error,
-    {
-        pub fn local_addr(&self) -> &SocketAddr {
-            match self {
-                Self::StartSend { addr, .. } => addr,
-                Self::PollReady { addr, .. } => addr,
-                Self::PollFlush { addr, .. } => addr,
-                Self::PollClose { addr, .. } => addr,
-                Self::ItemEncode { addr, .. } => addr,
-            }
-        }
-
-        pub fn peer_addr(&self) -> &SocketAddr {
-            match self {
-                Self::StartSend { peer_addr, .. } => peer_addr,
-                Self::PollReady { peer_addr, .. } => peer_addr,
-                Self::PollFlush { peer_addr, .. } => peer_addr,
-                Self::PollClose { peer_addr, .. } => peer_addr,
-                Self::ItemEncode { peer_addr, .. } => peer_addr,
-            }
-        }
-
-        pub fn is_encode_error(&self) -> bool {
-            matches!(self, Self::ItemEncode { .. })
-        }
-
-        pub fn is_sink_error(&self) -> bool {
-            !self.is_encode_error()
-        }
-
-        pub fn as_io(&self) -> Option<&std::io::Error> {
-            match self {
-                Self::StartSend { source, .. } => source.as_io(),
-                Self::PollReady { source, .. } => source.as_io(),
-                Self::PollFlush { source, .. } => source.as_io(),
-                Self::PollClose { source, .. } => source.as_io(),
-                _ => None,
-            }
-        }
-
-        /// Check if the error is a connection error.
-        ///
-        /// Returns `true` if the error either `reset`, `refused`, `aborted`, `not connected`, or
-        /// `broken pipe`.
-        ///
-        /// This is useful to see if the returned error is from the underlying TCP connection.
-        /// This method will be bubbled up with the error, and also be available at the highest
-        /// level.
-        pub fn is_connection_error(&self) -> bool {
-            self.is_connection_reset()
-                || self.is_connection_refused()
-                || self.is_connection_aborted()
-                || self.is_not_connected()
-                || self.is_broken_pipe()
-        }
-
-        pub fn is_connection_reset(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == ErrorKind::ConnectionReset)
-                .unwrap_or_default()
-        }
-
-        pub fn is_connection_refused(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == ErrorKind::ConnectionRefused)
-                .unwrap_or_default()
-        }
-
-        pub fn is_connection_aborted(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == ErrorKind::ConnectionAborted)
-                .unwrap_or_default()
-        }
-
-        pub fn is_not_connected(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == ErrorKind::NotConnected)
-                .unwrap_or_default()
-        }
-
-        pub fn is_broken_pipe(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == ErrorKind::BrokenPipe)
-                .unwrap_or_default()
+#[allow(missing_docs)]
+impl<E> SinkError<E>
+where
+    E: 'static + std::error::Error,
+{
+    pub fn local_addr(&self) -> &SocketAddr {
+        match self {
+            Self::StartSend { addr, .. } => addr,
+            Self::PollReady { addr, .. } => addr,
+            Self::PollFlush { addr, .. } => addr,
+            Self::PollClose { addr, .. } => addr,
+            Self::ItemEncode { addr, .. } => addr,
         }
     }
 
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum StreamError<E>
-    where
-        E: 'static + snafu::Error,
-    {
-        #[snafu(display("[StreamError] Failed to decode frame of data on {addr} to {peer_addr}"))]
-        ItemDecode {
-            addr: SocketAddr,
-            peer_addr: SocketAddr,
-            source: E,
-            backtrace: Backtrace,
-        },
-        #[snafu(display("[StreamError] Failed to call poll_next on {addr} to {peer_addr}"))]
-        PollNext {
-            addr: SocketAddr,
-            peer_addr: SocketAddr,
-            source: CodecError,
-            backtrace: Backtrace,
-        },
-    }
-
-    impl<E> StreamError<E>
-    where
-        E: 'static + snafu::Error,
-    {
-        pub fn local_addr(&self) -> &SocketAddr {
-            match self {
-                Self::PollNext { addr, .. } => addr,
-                Self::ItemDecode { addr, .. } => addr,
-            }
-        }
-
-        pub fn peer_addr(&self) -> &SocketAddr {
-            match self {
-                Self::ItemDecode { peer_addr, .. } => peer_addr,
-                Self::PollNext { peer_addr, .. } => peer_addr,
-            }
-        }
-
-        pub fn is_decode_error(&self) -> bool {
-            matches!(self, Self::ItemDecode { .. })
-        }
-
-        pub fn is_recv_error(&self) -> bool {
-            !self.is_decode_error()
-        }
-
-        pub fn as_io(&self) -> Option<&std::io::Error> {
-            match self {
-                Self::PollNext { source, .. } => source.as_io(),
-                _ => None,
-            }
-        }
-
-        /// Check if the error is a connection error.
-        ///
-        /// Returns `true` if the error either `reset`, `refused`, `aborted`, `not connected`, or
-        /// `broken pipe`.
-        ///
-        /// This is useful to see if the returned error is from the underlying TCP connection.
-        /// This method will be bubbled up with the error, and also be available at the highest
-        /// level.
-        pub fn is_connection_error(&self) -> bool {
-            self.is_connection_reset()
-                || self.is_connection_refused()
-                || self.is_connection_aborted()
-                || self.is_not_connected()
-                || self.is_broken_pipe()
-        }
-
-        pub fn is_connection_reset(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == ErrorKind::ConnectionReset)
-                .unwrap_or_default()
-        }
-
-        pub fn is_connection_refused(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == ErrorKind::ConnectionRefused)
-                .unwrap_or_default()
-        }
-
-        pub fn is_connection_aborted(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == ErrorKind::ConnectionAborted)
-                .unwrap_or_default()
-        }
-
-        pub fn is_not_connected(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == ErrorKind::NotConnected)
-                .unwrap_or_default()
-        }
-
-        pub fn is_broken_pipe(&self) -> bool {
-            self.as_io()
-                .map(|e| e.kind() == ErrorKind::BrokenPipe)
-                .unwrap_or_default()
+    pub fn peer_addr(&self) -> &SocketAddr {
+        match self {
+            Self::StartSend { peer_addr, .. } => peer_addr,
+            Self::PollReady { peer_addr, .. } => peer_addr,
+            Self::PollFlush { peer_addr, .. } => peer_addr,
+            Self::PollClose { peer_addr, .. } => peer_addr,
+            Self::ItemEncode { peer_addr, .. } => peer_addr,
         }
     }
 
-    #[derive(Debug, Snafu)]
-    #[snafu(visibility(pub(super)))]
-    pub enum UnsplitError<E: 'static + snafu::Error> {
-        #[snafu(display("[UnsplitError] Underlying channels' local addrs are different: {l_local_addr:?} != {r_local_addr:?}"))]
-        UnequalLocalAddr {
-            l_local_addr: SocketAddr,
-            r_local_addr: SocketAddr,
-        },
-        #[snafu(display("[UnsplitError] Underlying channels' peer addrs are different: {l_peer_addr:?} != {r_peer_addr:?}"))]
-        UnequalPeerAddr {
-            l_peer_addr: SocketAddr,
-            r_peer_addr: SocketAddr,
-        },
-        #[snafu(display("[UnsplitError] Failed to unsplit framed"))]
-        FramedUnsplit { source: E, backtrace: Backtrace },
+    pub fn is_encode_error(&self) -> bool {
+        matches!(self, Self::ItemEncode { .. })
     }
+
+    pub fn is_sink_error(&self) -> bool {
+        !self.is_encode_error()
+    }
+
+    pub fn as_io(&self) -> Option<&std::io::Error> {
+        match self {
+            Self::StartSend { source, .. } => source.as_io(),
+            Self::PollReady { source, .. } => source.as_io(),
+            Self::PollFlush { source, .. } => source.as_io(),
+            Self::PollClose { source, .. } => source.as_io(),
+            _ => None,
+        }
+    }
+
+    /// Check if the error is a connection error.
+    ///
+    /// Returns `true` if the error either `reset`, `refused`, `aborted`, `not connected`, or
+    /// `broken pipe`.
+    ///
+    /// This is useful to see if the returned error is from the underlying TCP connection.
+    /// This method will be bubbled up with the error, and also be available at the highest
+    /// level.
+    pub fn is_connection_error(&self) -> bool {
+        self.is_connection_reset()
+            || self.is_connection_refused()
+            || self.is_connection_aborted()
+            || self.is_not_connected()
+            || self.is_broken_pipe()
+    }
+
+    pub fn is_connection_reset(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == ErrorKind::ConnectionReset)
+            .unwrap_or_default()
+    }
+
+    pub fn is_connection_refused(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == ErrorKind::ConnectionRefused)
+            .unwrap_or_default()
+    }
+
+    pub fn is_connection_aborted(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == ErrorKind::ConnectionAborted)
+            .unwrap_or_default()
+    }
+
+    pub fn is_not_connected(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == ErrorKind::NotConnected)
+            .unwrap_or_default()
+    }
+
+    pub fn is_broken_pipe(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == ErrorKind::BrokenPipe)
+            .unwrap_or_default()
+    }
+}
+
+#[allow(missing_docs)]
+#[derive(Debug, Error, Toss)]
+#[visibility(pub(super))]
+pub enum StreamError<E>
+where
+    E: 'static + std::error::Error,
+{
+    #[error("[StreamError] Failed to decode frame of data on {addr} to {peer_addr}")]
+    ItemDecode {
+        addr: SocketAddr,
+        peer_addr: SocketAddr,
+        source: E,
+    },
+    #[error("[StreamError] Failed to call poll_next on {addr} to {peer_addr}")]
+    PollNext {
+        addr: SocketAddr,
+        peer_addr: SocketAddr,
+        source: CodecError,
+    },
+}
+
+#[allow(missing_docs)]
+impl<E> StreamError<E>
+where
+    E: 'static + std::error::Error,
+{
+    pub fn local_addr(&self) -> &SocketAddr {
+        match self {
+            Self::PollNext { addr, .. } => addr,
+            Self::ItemDecode { addr, .. } => addr,
+        }
+    }
+
+    pub fn peer_addr(&self) -> &SocketAddr {
+        match self {
+            Self::ItemDecode { peer_addr, .. } => peer_addr,
+            Self::PollNext { peer_addr, .. } => peer_addr,
+        }
+    }
+
+    pub fn is_decode_error(&self) -> bool {
+        matches!(self, Self::ItemDecode { .. })
+    }
+
+    pub fn is_recv_error(&self) -> bool {
+        !self.is_decode_error()
+    }
+
+    pub fn as_io(&self) -> Option<&std::io::Error> {
+        match self {
+            Self::PollNext { source, .. } => source.as_io(),
+            _ => None,
+        }
+    }
+
+    /// Check if the error is a connection error.
+    ///
+    /// Returns `true` if the error either `reset`, `refused`, `aborted`, `not connected`, or
+    /// `broken pipe`.
+    ///
+    /// This is useful to see if the returned error is from the underlying TCP connection.
+    /// This method will be bubbled up with the error, and also be available at the highest
+    /// level.
+    pub fn is_connection_error(&self) -> bool {
+        self.is_connection_reset()
+            || self.is_connection_refused()
+            || self.is_connection_aborted()
+            || self.is_not_connected()
+            || self.is_broken_pipe()
+    }
+
+    pub fn is_connection_reset(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == ErrorKind::ConnectionReset)
+            .unwrap_or_default()
+    }
+
+    pub fn is_connection_refused(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == ErrorKind::ConnectionRefused)
+            .unwrap_or_default()
+    }
+
+    pub fn is_connection_aborted(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == ErrorKind::ConnectionAborted)
+            .unwrap_or_default()
+    }
+
+    pub fn is_not_connected(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == ErrorKind::NotConnected)
+            .unwrap_or_default()
+    }
+
+    pub fn is_broken_pipe(&self) -> bool {
+        self.as_io()
+            .map(|e| e.kind() == ErrorKind::BrokenPipe)
+            .unwrap_or_default()
+    }
+}
+
+#[allow(missing_docs)]
+#[derive(Debug, Error, Toss)]
+#[visibility(pub(super))]
+pub enum UnsplitError<E: 'static + std::error::Error> {
+    #[error("[UnsplitError] Underlying channels' local addrs are different: {l_local_addr:?} != {r_local_addr:?}")]
+    UnequalLocalAddr {
+        l_local_addr: SocketAddr,
+        r_local_addr: SocketAddr,
+    },
+    #[error("[UnsplitError] Underlying channels' peer addrs are different: {l_peer_addr:?} != {r_peer_addr:?}")]
+    UnequalPeerAddr {
+        l_peer_addr: SocketAddr,
+        r_peer_addr: SocketAddr,
+    },
+    #[error("[UnsplitError] Failed to unsplit framed")]
+    FramedUnsplit { source: E },
 }

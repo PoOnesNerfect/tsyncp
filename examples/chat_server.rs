@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
                 if e.is_connection_error() {
                     println!("{} disconnected!", e.peer_addr().unwrap());
                 } else {
-                    report(&e, true);
+                    report(&e);
                 }
 
                 continue;
@@ -57,7 +57,7 @@ async fn main() -> Result<()> {
         if let Err(error) = res {
             // if error is from encoding, then report it.
             if error.is_encode_error() {
-                report(&error, true);
+                report(&error);
                 continue;
             }
 
@@ -67,7 +67,7 @@ async fn main() -> Result<()> {
                 if e.is_connection_error() {
                     println!("{} disconnected!", e.peer_addr());
                 } else {
-                    report(e, false);
+                    report(e);
                 }
             }
         }
@@ -76,9 +76,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn report<E>(err: &E, backtrace: bool)
+fn report<E>(err: &E)
 where
-    E: 'static + Send + Sync + snafu::Error + snafu::ErrorCompat,
+    E: 'static + Send + Sync + std::error::Error,
 {
     let mut error_str = format!("[ERROR] {}\n\n", err);
 
@@ -86,13 +86,6 @@ where
         error_str.push_str("Caused by:\n");
         for (i, e) in std::iter::successors(Some(source), |e| e.source()).enumerate() {
             error_str.push_str(&format!("   {}: {}\n", i, e));
-        }
-    }
-
-    if backtrace {
-        if let Some(backtrace) = snafu::ErrorCompat::backtrace(err) {
-            error_str.push_str("\nBacktrace:\n");
-            error_str.push_str(&format!("{:?}", backtrace));
         }
     }
 

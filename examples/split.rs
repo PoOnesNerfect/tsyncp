@@ -27,7 +27,6 @@ async fn main() {
 
     if let Err(error) = try_main().await {
         error!("Error encountered while running service: \n\n{:?}", error);
-        // error.downcast_ref::<Box<dyn snafu::ErrorCompat + Send + Sync + std::fmt::Debug>>();
     }
 }
 
